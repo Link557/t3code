@@ -390,7 +390,13 @@ export const VoiceTranscriptionDestination = Schema.Union([
 ]);
 export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination.Type;
 
+export const InterfaceLanguage = Schema.Literals(["en", "zh-CN"]);
+export type InterfaceLanguage = typeof InterfaceLanguage.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
+  interfaceLanguage: InterfaceLanguage.pipe(
+    Schema.withDecodingDefault(Effect.succeed("en" as const)),
+  ),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -1981,6 +1987,7 @@ export function requiredScopesForProjectMutation(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  interfaceLanguage: Schema.optionalKey(InterfaceLanguage),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),

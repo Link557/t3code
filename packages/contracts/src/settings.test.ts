@@ -303,6 +303,17 @@ describe("resolveIdleCompaction", () => {
   });
 });
 
+describe("ClientSettings interface language", () => {
+  it("defaults existing settings to English and validates language changes", () => {
+    expect(decodeClientSettings({}).interfaceLanguage).toBe("en");
+    expect(decodeClientSettings({ interfaceLanguage: "zh-CN" }).interfaceLanguage).toBe("zh-CN");
+    expect(decodeClientSettingsPatch({ interfaceLanguage: "zh-CN" })).toEqual({
+      interfaceLanguage: "zh-CN",
+    });
+    expect(() => decodeClientSettingsPatch({ interfaceLanguage: "invalid" })).toThrow();
+  });
+});
+
 describe("ClientSettings notifications", () => {
   it("requires opt-in when existing settings omit notification preferences", () => {
     expect(decodeClientSettings({}).notificationMode).toBe("off");
