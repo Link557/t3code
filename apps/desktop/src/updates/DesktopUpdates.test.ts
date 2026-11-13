@@ -96,6 +96,20 @@ describe("DesktopUpdates", () => {
     }),
   );
 
+  it.effect("never checks the official update feed from a Chinese build", () => {
+    const harness = makeHarness({ appVersion: "0.1.9-zh.1" });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.equal(state.enabled, false);
+        assert.equal(state.status, "disabled");
+        assert.equal(harness.checkCount(), 0);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("keeps the disabled reason available after configuration and channel changes", () => {
     const harness = makeHarness({ env: { T3CODE_DISABLE_AUTO_UPDATE: "true" } });
     const reason = "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";

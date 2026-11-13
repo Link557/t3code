@@ -1,3 +1,4 @@
+import { translateWebMessage } from "../../i18n/messages";
 import { MessageId, RunAttemptId, RunId, type ScreenReaderAnnouncements } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
@@ -85,7 +86,23 @@ describe("turnDetail", () => {
     name: string;
     entries: ReadonlyArray<TimelineEntry>;
     activity: string | null;
+    locale?: "en" | "zh-CN";
   }>([
+    {
+      name: "a Chinese activity with an opaque English filename",
+      entries: [prompt, work("edit", { itemType: "file_change", changedFiles: ["Thinking.ts"] })],
+      activity: "正在编辑 Thinking.ts",
+      locale: "zh-CN",
+    },
+    {
+      name: "Chinese reasoning without exposing provider reasoning",
+      entries: [
+        prompt,
+        work("thought", { itemType: "reasoning", tone: "thinking", detail: "Private idea." }),
+      ],
+      activity: "思考中",
+      locale: "zh-CN",
+    },
     { name: "a running command", entries: [prompt, command("git")], activity: "Running git" },
     {
       name: "reasoning, without its text",
@@ -129,8 +146,12 @@ describe("turnDetail", () => {
       entries: [message("earlier", "user"), command("git"), prompt],
       activity: null,
     },
-  ])("names $name", ({ entries, activity }) => {
-    expect(turnDetail(entries, undefined, null).activity).toBe(activity);
+  ])("names $name", ({ entries, activity, locale = "en" }) => {
+    expect(
+      turnDetail(entries, undefined, null, (key, values) =>
+        translateWebMessage(locale, key, values),
+      ).activity,
+    ).toBe(activity);
   });
 
   it.each<{
@@ -295,6 +316,24 @@ describe("nextTurnDetailAnnouncement", () => {
         frame(null, [first, { ...said("empty", true, true), text: "<!-- note -->" }]),
       ]),
     ).toEqual(["T3 Code: Tests pass in web. See the docs"]);
+    const baseline = nextTurnDetailAnnouncement(null, {
+      ...frame(null),
+      tailId: null,
+      level: "messages",
+    }).memory;
+    const opaque = "Thinking ".repeat(300);
+    const translated = nextTurnDetailAnnouncement(
+      baseline,
+      {
+        ...frame(null, [{ ...said("long", true, true), text: opaque }]),
+        tailId: "long",
+        level: "messages",
+      },
+      (key, values) => translateWebMessage("zh-CN", key, values),
+    );
+    expect(translated.messages).toEqual([
+      `T3 Code: ${opaque.slice(0, 2_000).trim()} 更多内容请查看会话。`,
+    ]);
   });
 
   it("says a step again after waiting on the user", () => {

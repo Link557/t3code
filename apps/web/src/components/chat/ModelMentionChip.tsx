@@ -1,3 +1,4 @@
+import { useI18n } from "~/i18n/WebI18nContext";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -90,6 +91,7 @@ export function ModelMentionChip(props: {
   model: string;
   source: string;
 }) {
+  const { locale } = useI18n();
   const presentation = useAtomValue(
     modelMentionPresentationAtom(
       `${props.environmentId ?? ""}\u0000${modelMentionKey(props.instanceId, props.model)}`,
@@ -112,7 +114,7 @@ export function ModelMentionChip(props: {
         />
       }
       label={presentation.label}
-      accessibleLabel={`Model ${presentation.label}`}
+      accessibleLabel={`${locale === "zh-CN" ? "模型" : "Model"} ${presentation.label}`}
       copyMarkdown={props.source}
     >
       <div className="space-y-1 p-2 text-sm">

@@ -1,3 +1,5 @@
+import { useI18n } from "../i18n/WebI18nContext";
+import { translateWebSource } from "../i18n/messages";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -113,15 +115,17 @@ export const Route = createRootRoute({
 });
 
 function RootRouteNotFoundView() {
+  const { locale, t } = useI18n();
   return (
     <main className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-6">
       <div className="flex max-w-sm flex-col items-center gap-4 text-center">
-        <h1 className="text-lg font-medium text-foreground">Page not found</h1>
+        <h1 className="text-lg font-medium text-foreground">
+          {translateWebSource(locale, "Page not found")}
+        </h1>
         <p className="text-sm text-muted-foreground">
-          This link doesn't point to a page in {APP_DISPLAY_NAME}. Go home to choose a project or
-          start a thread.
+          {t("root.notFoundDescription", { app: APP_DISPLAY_NAME })}
         </p>
-        <Button render={<Link to="/" replace />}>Go home</Button>
+        <Button render={<Link to="/" replace />}>{translateWebSource(locale, "Go home")}</Button>
       </div>
     </main>
   );
@@ -232,28 +236,37 @@ function RootRouteBranch() {
 }
 
 function RootRouteErrorView({ error }: ErrorComponentProps) {
+  const { locale } = useI18n();
   const router = useRouter();
-  const message = errorMessage(error);
+  const message = errorMessage(
+    error,
+    translateWebSource(locale, "An unexpected router error occurred."),
+  );
   // Router pathname rather than window.location: desktop uses hash history, where the window path is always "/".
   const pathname = useLocation({ select: (location) => location.pathname });
   const report = errorReport(error, pathname);
 
   return (
     <StandalonePage>
-      <StandalonePageHeader title="Something went wrong." description={message} />
+      <StandalonePageHeader
+        title={translateWebSource(locale, "Something went wrong.")}
+        description={message}
+      />
 
       <div className="mt-5 flex flex-wrap gap-2">
         <Button size="sm" onClick={() => void router.invalidate()}>
-          Try again
+          {translateWebSource(locale, "Try again")}
         </Button>
         <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-          Reload app
+          {translateWebSource(locale, "Reload app")}
         </Button>
         <CopyErrorButton report={report} />
       </div>
 
       <div className="mt-5 overflow-hidden rounded-lg border border-border/70 bg-background/55">
-        <p className="px-3 py-1.5 text-xs font-medium text-muted-foreground">Error report</p>
+        <p className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          {translateWebSource(locale, "Error report")}
+        </p>
         <pre className="max-h-64 overflow-auto border-t border-border/70 bg-background/80 px-3 py-2 text-xs whitespace-pre-wrap text-foreground/85">
           {report}
         </pre>
@@ -263,17 +276,18 @@ function RootRouteErrorView({ error }: ErrorComponentProps) {
 }
 
 function CopyErrorButton({ report }: { report: string }) {
+  const { locale } = useI18n();
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "error-report" });
 
   return (
     <Button size="sm" variant="outline" onClick={() => copyToClipboard(report)}>
       {isCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-      {isCopied ? "Copied" : "Copy error"}
+      {translateWebSource(locale, isCopied ? "Copied" : "Copy error")}
     </Button>
   );
 }
 
-function errorMessage(error: unknown): string {
+function errorMessage(error: unknown, fallback = "An unexpected router error occurred."): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
@@ -282,7 +296,7 @@ function errorMessage(error: unknown): string {
     return error;
   }
 
-  return "An unexpected router error occurred.";
+  return fallback;
 }
 
 function errorDetails(error: unknown): string {

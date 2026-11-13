@@ -1,3 +1,5 @@
+import { useI18n } from "../../i18n/WebI18nContext";
+import { translateWebSource } from "../../i18n/messages";
 import type { ScreenReaderAnnouncements } from "@t3tools/contracts";
 import { memo, useEffect, useRef } from "react";
 
@@ -33,7 +35,9 @@ function holdAfter(text: string) {
 /** One write, since a second write to a region replaces the first before it is heard. */
 function asOneAnnouncement(texts: ReadonlyArray<string>) {
   return texts
-    .map((text, index) => (index === texts.length - 1 || /[.!?:…]$/.test(text) ? text : `${text}.`))
+    .map((text, index) =>
+      index === texts.length - 1 || /[.!?:…。！？：]$/.test(text) ? text : `${text}.`,
+    )
     .join(" ");
 }
 
@@ -61,6 +65,7 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
   readonly entries: ReadonlyArray<TimelineEntry>;
   readonly workspaceRoot: string | undefined;
 }) {
+  const { locale, t } = useI18n();
   const { regionRef, announce, clear } = useLiveRegion();
   const {
     regionRef: detailRegionRef,
@@ -70,6 +75,7 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
   const memoryRef = useRef<{
     threadKey: string;
     level: ScreenReaderAnnouncements;
+    locale: string;
     memory: ThreadAnnouncementMemory;
     detail: TurnDetailMemory;
   } | null>(null);
@@ -117,30 +123,37 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
       runStatus,
     });
     // A new level starts from what the turn already holds, so raising it mid-turn replays nothing.
-    const previousDetail = previous?.level === level ? previous.detail : null;
-    const detail = nextTurnDetailAnnouncement(previousDetail, {
-      ...(level === "status"
-        ? NO_TURN_DETAIL
-        : turnDetail(entries, workspaceRoot, previousDetail?.tailId ?? null)),
-      level,
-      status,
-    });
-    memoryRef.current = { threadKey, level, memory: turn.memory, detail: detail.memory };
-    if (previous === null) {
+    const previousDetail =
+      previous?.level === level && previous.locale === locale ? previous.detail : null;
+    const detail = nextTurnDetailAnnouncement(
+      previousDetail,
+      {
+        ...(level === "status"
+          ? NO_TURN_DETAIL
+          : turnDetail(entries, workspaceRoot, previousDetail?.tailId ?? null, t)),
+        level,
+        status,
+      },
+      t,
+    );
+    memoryRef.current = { threadKey, level, locale, memory: turn.memory, detail: detail.memory };
+    if (previous === null || previous.locale !== locale) {
       step.quietUntil = 0;
       clear();
       clearDetail();
       return;
     }
+    const statusAnnouncement =
+      turn.announcement === null ? null : translateWebSource(locale, turn.announcement);
     if (detail.messages.length > 0) {
       // NVDA reads two regions written in the same frame in either order, so a
       // status that lands with a message is read as its last sentence.
       const text = asOneAnnouncement(
-        turn.announcement === null ? detail.messages : [...detail.messages, turn.announcement],
+        statusAnnouncement === null ? detail.messages : [...detail.messages, statusAnnouncement],
       );
       write(text, holdAfter(text));
-    } else if (turn.announcement !== null) {
-      announce(turn.announcement);
+    } else if (statusAnnouncement !== null) {
+      announce(statusAnnouncement);
       step.quietUntil = Math.max(step.quietUntil, Date.now() + ACTIVITY_GAP_MS);
     }
     // A waiting label is stale once its step is over or the level no longer reads steps.
@@ -163,6 +176,8 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
     // The next run takes the label over; after an unmount nothing is left to speak it.
     return () => clearTimeout(timer);
   }, [
+    locale,
+    t,
     threadKey,
     status,
     requestId,

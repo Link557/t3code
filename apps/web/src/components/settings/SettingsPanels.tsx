@@ -1,3 +1,5 @@
+import { translateWebExtraSource } from "~/i18n/webExtraMessages";
+import { managedUpdatesDenial, managedUpdatesMessage } from "../../i18n/managedPolicyMessages";
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -8,8 +10,6 @@ import {
   type DesktopUpdateChannel,
   IDLE_COMPACTION_MODES,
   globalIdleCompaction,
-  managedUpdatesDenial,
-  managedUpdatesMessage,
   ProviderDriverKind,
   type ProviderInstanceId,
   type SidebarProjectGroupingMode,
@@ -30,7 +30,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
-import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
+import { APP_VERSION, HOSTED_APP_CHANNEL } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
@@ -45,6 +45,9 @@ import {
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
+import { useI18n } from "../../i18n/WebI18nContext";
+import { LanguageSelect } from "../LanguageSelect";
+import { translateWebSource } from "../../i18n/messages";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import {
   readAppearanceModePreference,
@@ -153,6 +156,7 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 function AboutVersionSection() {
+  const { t, locale } = useI18n();
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
@@ -170,7 +174,7 @@ function AboutVersionSection() {
   const selectedUpdateChannel = updateState?.channel ?? "latest";
   // The desktop updates this machine, whose policy the primary environment reports.
   const primaryPolicy = usePrimaryManagedPolicy();
-  const updatesDenial = hasDesktopBridge ? managedUpdatesDenial(primaryPolicy) : undefined;
+  const updatesDenial = hasDesktopBridge ? managedUpdatesDenial(primaryPolicy, t) : undefined;
   const nightlyDeniedBy =
     hasDesktopBridge && primaryPolicy?.limits?.updates?.allowNightly === false
       ? primaryPolicy.organization
@@ -206,8 +210,11 @@ function AboutVersionSection() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not download update",
-            description: error instanceof Error ? error.message : "Download failed.",
+            title: t("settings.about.error.downloadTitle"),
+            description:
+              error instanceof Error
+                ? error.message
+                : t("settings.about.error.downloadDescription"),
           }),
         );
       });
@@ -222,6 +229,7 @@ function AboutVersionSection() {
         confirmed = await ensureLocalApi().dialogs.confirm(
           getDesktopUpdateInstallConfirmationMessage(
             updateState ?? { availableVersion: null, downloadedVersion: null },
+            t,
           ),
         );
       } catch (error) {
@@ -229,8 +237,9 @@ function AboutVersionSection() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not confirm update",
-            description: error instanceof Error ? error.message : "Update confirmation failed.",
+            title: t("settings.about.error.confirmTitle"),
+            description:
+              error instanceof Error ? error.message : t("settings.about.error.confirmDescription"),
           }),
         );
         return;
@@ -245,8 +254,11 @@ function AboutVersionSection() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Could not install update",
-              description: error instanceof Error ? error.message : "Install failed.",
+              title: t("settings.about.error.installTitle"),
+              description:
+                error instanceof Error
+                  ? error.message
+                  : t("settings.about.error.installDescription"),
             }),
           );
         })
@@ -263,11 +275,9 @@ function AboutVersionSection() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Could not check for updates",
+              title: t("settings.about.error.checkTitle"),
               description:
-                updatesDenial ??
-                result.state.message ??
-                "Automatic updates are not available in this build.",
+                updatesDenial ?? result.state.message ?? t("settings.about.error.unavailable"),
             }),
           );
         }
@@ -276,34 +286,39 @@ function AboutVersionSection() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
+            title: t("settings.about.error.checkTitle"),
+            description:
+              error instanceof Error ? error.message : t("settings.about.error.checkDescription"),
           }),
         );
       });
   };
 
   const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
-  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
+  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState, t) : null;
   const buttonDisabled =
     action === "none"
       ? !canCheckForUpdate(updateState)
       : isDesktopUpdateButtonDisabled(updateState);
 
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
+  const actionLabel: Record<string, string> = {
+    download: t("settings.about.action.download"),
+    install: t("settings.about.action.install"),
+  };
   const statusLabel: Record<string, string> = {
-    checking: "Checking…",
-    downloading: "Downloading…",
-    // Off its track, "up to date" only means no switch is pending; Review moves it.
-    ...(appOffTrack ? {} : { "up-to-date": "Up to Date" }),
+    checking: t("settings.about.action.checking"),
+    downloading: t("settings.about.action.downloading"),
+    ...(appOffTrack ? {} : { "up-to-date": t("settings.about.action.upToDate") }),
   };
   const buttonLabel =
-    actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
+    actionLabel[action] ??
+    statusLabel[updateState?.status ?? ""] ??
+    t("settings.about.action.checkForUpdates");
   const description =
     action === "download" || action === "install"
-      ? "Update available."
-      : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
-        "Current version of the application.");
+      ? t("settings.about.updateAvailable")
+      : (getDesktopUpdateDisabledReason(updateState, t, updatesDenial) ??
+        t("settings.about.currentVersion"));
 
   return (
     <>
@@ -335,25 +350,32 @@ function AboutVersionSection() {
           {...searchableSetting("update-track")}
           description={
             nightlyDeniedBy !== undefined ? (
-              `${managedUpdatesMessage(nightlyDeniedBy)} Nightly builds are not available${
+              `${managedUpdatesMessage(nightlyDeniedBy, t)} ${translateWebSource(
+                locale,
                 selectedUpdateChannel === "nightly"
-                  ? "; switch to Stable to keep getting updates."
-                  : "."
-              }`
+                  ? "Nightly builds are not available; switch to Stable to keep getting updates."
+                  : "Nightly builds are not available.",
+              )}`
             ) : unswitchedMachines > 0 ? (
               <>
-                {unswitchedMachines === 1
-                  ? "1 machine still runs"
-                  : `${unswitchedMachines} machines still run`}{" "}
-                {channelSwitchLabel(selectedUpdateChannel === "nightly" ? "latest" : "nightly")}.{" "}
-                {/* The dialog moves what it can and says why it skips the rest. */}
+                {locale === "zh-CN"
+                  ? `仍有 ${unswitchedMachines} 台机器运行`
+                  : unswitchedMachines === 1
+                    ? "1 machine still runs"
+                    : `${unswitchedMachines} machines still run`}{" "}
+                {locale === "zh-CN"
+                  ? selectedUpdateChannel === "nightly"
+                    ? "稳定版"
+                    : "每夜构建版"
+                  : channelSwitchLabel(selectedUpdateChannel === "nightly" ? "latest" : "nightly")}
+                . {/* The dialog moves what it can and says why it skips the rest. */}
                 <Button
                   size="xs"
                   variant="link"
                   disabled={updateRun !== null}
                   onClick={() => setSwitchChannel(selectedUpdateChannel)}
                 >
-                  Review
+                  {translateWebSource(locale, "Review")}
                 </Button>
               </>
             ) : (
@@ -373,21 +395,25 @@ function AboutVersionSection() {
               <SelectTrigger
                 size="sm"
                 className="w-full sm:w-40"
-                aria-label="Update track"
+                aria-label={t("settings.about.updateTrack.title")}
                 disabled={switchChannel !== null || updateRun !== null}
               >
-                <SelectValue>{channelSwitchLabel(selectedUpdateChannel)}</SelectValue>
+                <SelectValue>
+                  {selectedUpdateChannel === "nightly"
+                    ? t("settings.about.updateTrack.option.nightly")
+                    : t("settings.about.updateTrack.option.stable")}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="latest">
-                  Stable
+                  {t("settings.about.updateTrack.option.stable")}
                 </SelectItem>
                 <SelectItem
                   hideIndicator
                   value="nightly"
                   disabled={nightlyDeniedBy !== undefined && selectedUpdateChannel !== "nightly"}
                 >
-                  Nightly
+                  {t("settings.about.updateTrack.option.nightly")}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -396,7 +422,8 @@ function AboutVersionSection() {
       ) : selectedHostedAppChannel ? (
         <SettingsRow
           {...searchableSetting("update-track")}
-          description="Switches the hosted app release channel."
+          title={t("settings.about.updateTrack.title")}
+          description={t("settings.about.updateTrack.description.hosted")}
           control={
             <Select
               value={selectedHostedAppChannel}
@@ -407,15 +434,23 @@ function AboutVersionSection() {
                 );
               }}
             >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Update track">
-                <SelectValue>{HOSTED_APP_CHANNEL_LABEL}</SelectValue>
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label={t("settings.about.updateTrack.title")}
+              >
+                <SelectValue>
+                  {selectedHostedAppChannel === "nightly"
+                    ? t("settings.about.updateTrack.option.nightly")
+                    : t("settings.about.updateTrack.option.latest")}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="latest">
-                  Latest
+                  {t("settings.about.updateTrack.option.latest")}
                 </SelectItem>
                 <SelectItem hideIndicator value="nightly">
-                  Nightly
+                  {t("settings.about.updateTrack.option.nightly")}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -431,6 +466,7 @@ function AboutVersionSection() {
 }
 
 export function useSettingsRestore(onRestored?: () => void) {
+  const { locale, t } = useI18n();
   const {
     theme,
     setTheme,
@@ -450,6 +486,9 @@ export function useSettingsRestore(onRestored?: () => void) {
   const isBackgroundActivityDirty = hasChangedBackgroundActivitySettings(settings);
 
   const changedSettingLabels = [
+    ...(settings.interfaceLanguage !== DEFAULT_UNIFIED_SETTINGS.interfaceLanguage
+      ? [t("settings.language.label")]
+      : []),
     ...(theme !== "system" ? ["Theme"] : []),
     ...(!followSystem ? ["Follow system"] : []),
     ...(themeHalves !== null ? ["Theme mix"] : []),
@@ -541,7 +580,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? ["Tool calls in chat"]
       : []),
     ...(settings.screenReaderAnnouncements !== DEFAULT_UNIFIED_SETTINGS.screenReaderAnnouncements
-      ? ["Screen reader announcements"]
+      ? [translateWebSource(locale, "Screen reader announcements")]
       : []),
     ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
       ? ["Response streaming"]
@@ -591,9 +630,14 @@ export function useSettingsRestore(onRestored?: () => void) {
     if (changedSettingLabels.length === 0) return;
     const api = readLocalApi();
     const confirmed = await (api ?? ensureLocalApi()).dialogs.confirm(
-      ["Restore default settings?", `This will reset: ${changedSettingLabels.join(", ")}.`].join(
-        "\n",
-      ),
+      [
+        t("settings.restore.confirmTitle"),
+        t("settings.restore.confirmDescription", {
+          settings: changedSettingLabels
+            .map((label) => translateWebExtraSource(locale, label))
+            .join("、"),
+        }),
+      ].join("\n"),
       { variant: "destructive" },
     );
     if (!confirmed) return;
@@ -612,8 +656,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Couldn’t restore theme settings",
-          description: "Try again.",
+          title: t("appearance.theme.toast.restoreFailed"),
+          description: t("common.retry"),
         }),
       );
     };
@@ -639,6 +683,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       return;
     }
     updateSettings({
+      interfaceLanguage: DEFAULT_UNIFIED_SETTINGS.interfaceLanguage,
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       chatWidth: DEFAULT_UNIFIED_SETTINGS.chatWidth,
@@ -727,6 +772,7 @@ function AutoSettleDaysInput({
   value: number;
   onCommit: (days: number) => void;
 }) {
+  const { locale } = useI18n();
   const [draft, setDraft] = useState(String(value));
   const [draftSource, setDraftSource] = useState(value);
   if (draftSource !== value) {
@@ -754,12 +800,13 @@ function AutoSettleDaysInput({
         }
       }}
       onBlur={() => setDraft(String(value))}
-      aria-label="Days of inactivity before auto-settle"
+      aria-label={translateWebSource(locale, "Days of inactivity before auto-settle")}
     />
   );
 }
 
 export function GeneralSettingsPanel() {
+  const { locale, t } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
@@ -768,16 +815,29 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection id="language" title={t("settings.language.title")}>
+        <SettingsRow
+          {...searchableSetting("app-language")}
+          title={t("settings.language.label")}
+          description={t("settings.language.description")}
+          control={<LanguageSelect />}
+        />
+      </SettingsSection>
+
       <SettingsSection id="notifications" title="Notifications">
         <NotificationSettings />
         <SettingsRow
           {...searchableSetting("in-app-notifications")}
-          description="Show a toast when another thread finishes, fails, or needs input or approval while this app has focus."
+          title={translateWebExtraSource(locale, "In-app notifications")}
+          description={translateWebExtraSource(
+            locale,
+            "Show a toast when another thread finishes, fails, or needs input or approval while this app has focus.",
+          )}
           control={
             <Switch
               checked={settings.inAppNotificationsEnabled}
               onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
-              aria-label="In-app notifications"
+              aria-label={translateWebExtraSource(locale, "In-app notifications")}
             />
           }
         />
@@ -815,13 +875,17 @@ export function GeneralSettingsPanel() {
                   ),
                 });
               }}
-              aria-label="Project grouping"
+              aria-label={translateWebSource(locale, "Project grouping")}
             />
           }
         />
         <SettingsRow
           {...searchableSetting("project-order")}
-          description="Order of projects in the sidebar project picker and command palette."
+          title={translateWebExtraSource(locale, "Project order")}
+          description={translateWebExtraSource(
+            locale,
+            "Order of projects in the sidebar project picker and command palette.",
+          )}
           resetAction={
             settings.sidebarProjectSortOrder !==
             DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ? (
@@ -844,15 +908,22 @@ export function GeneralSettingsPanel() {
                 }
               }}
             >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Project order">
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-44"
+                aria-label={translateWebExtraSource(locale, "Project order")}
+              >
                 <SelectValue>
-                  {SIDEBAR_PROJECT_SORT_ORDER_LABELS[settings.sidebarProjectSortOrder]}
+                  {translateWebExtraSource(
+                    locale,
+                    SIDEBAR_PROJECT_SORT_ORDER_LABELS[settings.sidebarProjectSortOrder],
+                  )}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 {SidebarProjectSortOrder.literals.map((sortOrder) => (
                   <SelectItem hideIndicator key={sortOrder} value={sortOrder}>
-                    {SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder]}
+                    {translateWebExtraSource(locale, SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder])}
                   </SelectItem>
                 ))}
               </SelectPopup>
@@ -866,7 +937,7 @@ export function GeneralSettingsPanel() {
             settings.sidebarWorkingShelfEnabled !==
             DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled ? (
               <SettingResetButton
-                label="working section"
+                label={translateWebSource(locale, "Working section")}
                 onClick={() =>
                   updateSettings({
                     sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
@@ -881,7 +952,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ sidebarWorkingShelfEnabled: Boolean(checked) })
               }
-              aria-label="Working section"
+              aria-label={translateWebSource(locale, "Working section")}
             />
           }
         />
@@ -909,7 +980,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ confirmThreadUnpin: Boolean(checked) })
               }
-              aria-label="Confirm thread unpinning"
+              aria-label={translateWebExtraSource(locale, "Confirm thread unpinning")}
             />
           }
         />
@@ -934,7 +1005,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ confirmThreadArchive: Boolean(checked) })
               }
-              aria-label="Confirm thread archiving"
+              aria-label={translateWebExtraSource(locale, "Confirm thread archiving")}
             />
           }
         />
@@ -959,7 +1030,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
-              aria-label="Confirm thread deletion"
+              aria-label={translateWebExtraSource(locale, "Confirm thread deletion")}
             />
           }
         />
@@ -989,7 +1060,7 @@ export function GeneralSettingsPanel() {
                 <SelectTrigger
                   size="sm"
                   className="w-full sm:w-40"
-                  aria-label="Quit shortcut behavior"
+                  aria-label={translateWebExtraSource(locale, "Quit shortcut behavior")}
                 >
                   <SelectValue>{QUIT_CONFIRMATION_MODE_LABELS[settings.confirmQuit]}</SelectValue>
                 </SelectTrigger>
@@ -1031,18 +1102,24 @@ export function GeneralSettingsPanel() {
                 }
               }}
             >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Timestamp format">
-                <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label={translateWebExtraSource(locale, "Timestamp format")}
+              >
+                <SelectValue>
+                  {translateWebSource(locale, TIMESTAMP_FORMAT_LABELS[settings.timestampFormat])}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="locale">
-                  {TIMESTAMP_FORMAT_LABELS.locale}
+                  {translateWebSource(locale, TIMESTAMP_FORMAT_LABELS.locale)}
                 </SelectItem>
                 <SelectItem hideIndicator value="12-hour">
-                  {TIMESTAMP_FORMAT_LABELS["12-hour"]}
+                  {translateWebSource(locale, TIMESTAMP_FORMAT_LABELS["12-hour"])}
                 </SelectItem>
                 <SelectItem hideIndicator value="24-hour">
-                  {TIMESTAMP_FORMAT_LABELS["24-hour"]}
+                  {translateWebSource(locale, TIMESTAMP_FORMAT_LABELS["24-hour"])}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -1054,11 +1131,15 @@ export function GeneralSettingsPanel() {
 }
 
 export function ChatSettingsPanel() {
+  const { locale: translationLocale, t } = useI18n();
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
   const sendShortcutOptions = [
     { value: "enter", label: "Enter" },
-    { value: "mod-enter-multiline", label: `${modifierLabel} + Enter for multiline prompts` },
-    { value: "mod-enter", label: `${modifierLabel} + Enter always` },
+    {
+      value: "mod-enter-multiline",
+      label: t("settings.sendShortcut.multiline", { modifier: modifierLabel }),
+    },
+    { value: "mod-enter", label: t("settings.sendShortcut.always", { modifier: modifierLabel }) },
   ] as const;
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -1068,7 +1149,11 @@ export function ChatSettingsPanel() {
       <SettingsSection id="composer" title="Composer">
         <SettingsRow
           {...searchableSetting("composer-rich-text")}
-          description="Show formatted Markdown as you type."
+          title={translateWebExtraSource(translationLocale, "Rich text composer")}
+          description={translateWebExtraSource(
+            translationLocale,
+            "Show formatted Markdown as you type.",
+          )}
           resetAction={
             settings.composerRichTextEnabled !==
             DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled ? (
@@ -1088,13 +1173,17 @@ export function ChatSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ composerRichTextEnabled: Boolean(checked) })
               }
-              aria-label="Rich text composer"
+              aria-label={translateWebExtraSource(translationLocale, "Rich text composer")}
             />
           }
         />
         <SettingsRow
           {...searchableSetting("send-shortcut")}
-          description="Choose when Enter sends a prompt or inserts a new line"
+          title={translateWebExtraSource(translationLocale, "Send shortcut")}
+          description={translateWebExtraSource(
+            translationLocale,
+            "Choose when Enter sends a prompt or inserts a new line",
+          )}
           resetAction={
             settings.sendShortcut !== DEFAULT_UNIFIED_SETTINGS.sendShortcut ? (
               <SettingResetButton
@@ -1116,7 +1205,7 @@ export function ChatSettingsPanel() {
               <SelectTrigger
                 size="sm"
                 className="w-auto min-w-0 max-w-full"
-                aria-label="Send shortcut"
+                aria-label={translateWebExtraSource(translationLocale, "Send shortcut")}
               >
                 <SelectValue>
                   {
@@ -1160,7 +1249,7 @@ export function ChatSettingsPanel() {
                 onCheckedChange={(checked) =>
                   updateSettings({ showSkillsInSlashMenu: Boolean(checked) })
                 }
-                aria-label="Show skills in slash menu"
+                aria-label={translateWebSource(translationLocale, "Show skills in slash menu")}
               />
             }
           />
@@ -1171,10 +1260,14 @@ export function ChatSettingsPanel() {
         <SettingsRow
           {...searchableSetting("follow-up-behavior")}
           description={
-            "Queue follow-ups while the agent runs or steer the current run. " +
-            (settings.sendShortcut === "mod-enter-multiline"
-              ? `Press ${modifierLabel} + Enter for single-line prompts or ${modifierLabel} + Shift + Enter for multiline prompts to do the opposite for one message.`
-              : `Press ${modifierLabel}${settings.sendShortcut === "mod-enter" ? " + Shift" : ""} + Enter to do the opposite for one message.`)
+            settings.sendShortcut === "mod-enter-multiline"
+              ? t("settings.followUps.multilineDescription", {
+                  singleShortcut: `${modifierLabel} + Enter`,
+                  multilineShortcut: `${modifierLabel} + Shift + Enter`,
+                })
+              : t("settings.followUps.description", {
+                  shortcut: `${modifierLabel}${settings.sendShortcut === "mod-enter" ? " + Shift" : ""} + Enter`,
+                })
           }
           resetAction={
             settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior ? (
@@ -1197,14 +1290,25 @@ export function ChatSettingsPanel() {
                 }
               }}
             >
-              <SelectTrigger size="sm" className="w-auto min-w-0" aria-label="Follow-up behavior">
+              <SelectTrigger
+                size="sm"
+                className="w-auto min-w-0"
+                aria-label={translateWebSource(translationLocale, "Follow-up behavior")}
+              >
                 <SelectValue>
-                  {settings.followUpBehavior === "queue" ? "Queue" : "Steer"}
+                  {translateWebSource(
+                    translationLocale,
+                    settings.followUpBehavior === "queue" ? "Queue" : "Steer",
+                  )}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="queue">Queue</SelectItem>
-                <SelectItem value="steer">Steer</SelectItem>
+                <SelectItem value="queue">
+                  {translateWebSource(translationLocale, "Queue")}
+                </SelectItem>
+                <SelectItem value="steer">
+                  {translateWebSource(translationLocale, "Steer")}
+                </SelectItem>
               </SelectPopup>
             </Select>
           }
@@ -1229,6 +1333,7 @@ const TOOL_CALL_VISIBILITY_LABELS: Record<ToolCallVisibility, string> = {
 const isToolCallVisibility = Schema.is(ToolCallVisibility);
 
 function ToolCallVisibilityRow() {
+  const { locale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -1252,13 +1357,19 @@ function ToolCallVisibilityRow() {
             if (isToolCallVisibility(value)) updateSettings({ toolCallVisibility: value });
           }}
         >
-          <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Tool calls in chat">
-            <SelectValue>{TOOL_CALL_VISIBILITY_LABELS[settings.toolCallVisibility]}</SelectValue>
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-40"
+            aria-label={translateWebSource(locale, "Tool calls in chat")}
+          >
+            <SelectValue>
+              {translateWebSource(locale, TOOL_CALL_VISIBILITY_LABELS[settings.toolCallVisibility])}
+            </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
             {ToolCallVisibility.literals.map((value) => (
               <SelectItem key={value} value={value}>
-                {TOOL_CALL_VISIBILITY_LABELS[value]}
+                {translateWebSource(locale, TOOL_CALL_VISIBILITY_LABELS[value])}
               </SelectItem>
             ))}
           </SelectPopup>
@@ -1277,17 +1388,21 @@ const SCREEN_READER_ANNOUNCEMENTS_LABELS: Record<ScreenReaderAnnouncements, stri
 const isScreenReaderAnnouncements = Schema.is(ScreenReaderAnnouncements);
 
 function ScreenReaderAnnouncementsRow() {
+  const { locale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
     <SettingsRow
       {...searchableSetting("screen-reader-announcements")}
-      description="What a screen reader hears from the open thread: a turn starting, needing you, and ending. Status and messages adds what the agent writes before its last message. Everything adds each step."
+      description={translateWebSource(
+        locale,
+        "What a screen reader hears from the open thread: a turn starting, needing you, and ending. Status and messages adds what the agent writes before its last message. Everything adds each step.",
+      )}
       resetAction={
         settings.screenReaderAnnouncements !==
         DEFAULT_UNIFIED_SETTINGS.screenReaderAnnouncements ? (
           <SettingResetButton
-            label="screen reader announcements"
+            label={translateWebSource(locale, "Screen reader announcements")}
             onClick={() =>
               updateSettings({
                 screenReaderAnnouncements: DEFAULT_UNIFIED_SETTINGS.screenReaderAnnouncements,
@@ -1308,16 +1423,19 @@ function ScreenReaderAnnouncementsRow() {
           <SelectTrigger
             size="sm"
             className="w-full sm:w-48"
-            aria-label="Screen reader announcements"
+            aria-label={translateWebSource(locale, "Screen reader announcements")}
           >
             <SelectValue>
-              {SCREEN_READER_ANNOUNCEMENTS_LABELS[settings.screenReaderAnnouncements]}
+              {translateWebSource(
+                locale,
+                SCREEN_READER_ANNOUNCEMENTS_LABELS[settings.screenReaderAnnouncements],
+              )}
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
             {ScreenReaderAnnouncements.literals.map((value) => (
               <SelectItem key={value} value={value}>
-                {SCREEN_READER_ANNOUNCEMENTS_LABELS[value]}
+                {translateWebSource(locale, SCREEN_READER_ANNOUNCEMENTS_LABELS[value])}
               </SelectItem>
             ))}
           </SelectPopup>
@@ -1328,12 +1446,16 @@ function ScreenReaderAnnouncementsRow() {
 }
 
 function DiffColorsSettingsRow() {
+  const { locale: translationLocale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
     <SettingsRow
       {...searchableSetting("diff-color-scheme")}
-      description="Choose colors for additions and deletions, including change counts."
+      description={translateWebExtraSource(
+        translationLocale,
+        "Choose colors for additions and deletions, including change counts.",
+      )}
       resetAction={
         settings.diffColorScheme !== DEFAULT_UNIFIED_SETTINGS.diffColorScheme ? (
           <SettingResetButton
@@ -1353,7 +1475,11 @@ function DiffColorsSettingsRow() {
                 updateSettings({ diffColorScheme: value });
             }}
           >
-            <SelectTrigger size="sm" className="w-full min-w-0" aria-label="Diff colors">
+            <SelectTrigger
+              size="sm"
+              className="w-full min-w-0"
+              aria-label={translateWebSource(translationLocale, "Diff colors")}
+            >
               <span
                 aria-hidden="true"
                 className={
@@ -1366,12 +1492,19 @@ function DiffColorsSettingsRow() {
                 <span className="size-2 rounded-full bg-diff-addition" />
               </span>
               <SelectValue>
-                {settings.diffColorScheme === "blue-orange" ? "Blue & orange" : "Red & green"}
+                {translateWebSource(
+                  translationLocale,
+                  settings.diffColorScheme === "blue-orange" ? "Blue & orange" : "Red & green",
+                )}
               </SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
-              <SelectItem value="red-green">Red & green (default)</SelectItem>
-              <SelectItem value="blue-orange">Blue & orange</SelectItem>
+              <SelectItem value="red-green">
+                {translateWebSource(translationLocale, "Red & green (default)")}
+              </SelectItem>
+              <SelectItem value="blue-orange">
+                {translateWebSource(translationLocale, "Blue & orange")}
+              </SelectItem>
             </SelectPopup>
           </Select>
         </div>
@@ -1381,6 +1514,7 @@ function DiffColorsSettingsRow() {
 }
 
 export function DiffsSettingsPanel() {
+  const { locale: translationLocale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
 
@@ -1407,15 +1541,21 @@ export function DiffsSettingsPanel() {
                 }
               }}
             >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Diff layout">
-                <SelectValue>{DIFF_LAYOUT_LABELS[settings.diffLayout]}</SelectValue>
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label={translateWebSource(translationLocale, "Diff layout")}
+              >
+                <SelectValue>
+                  {translateWebSource(translationLocale, DIFF_LAYOUT_LABELS[settings.diffLayout])}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="stacked">
-                  {DIFF_LAYOUT_LABELS.stacked}
+                  {translateWebSource(translationLocale, DIFF_LAYOUT_LABELS.stacked)}
                 </SelectItem>
                 <SelectItem hideIndicator value="split">
-                  {DIFF_LAYOUT_LABELS.split}
+                  {translateWebSource(translationLocale, DIFF_LAYOUT_LABELS.split)}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -1442,13 +1582,19 @@ export function DiffsSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
               }
-              aria-label="Hide whitespace changes by default"
+              aria-label={translateWebExtraSource(
+                translationLocale,
+                "Hide whitespace changes by default",
+              )}
             />
           }
         />
         <SettingsRow
           {...searchableSetting("default-diff-file-state")}
-          description="Start with files expanded or collapsed when opening diffs or a pull request's Code tab."
+          description={translateWebExtraSource(
+            translationLocale,
+            "Start with files expanded or collapsed when opening diffs or a pull request's Code tab.",
+          )}
           resetAction={
             settings.diffFilesCollapsed !== DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed ? (
               <SettingResetButton
@@ -1473,16 +1619,21 @@ export function DiffsSettingsPanel() {
               <SelectTrigger
                 size="sm"
                 className="w-full sm:w-40"
-                aria-label="Default diff file state"
+                aria-label={translateWebSource(translationLocale, "Default diff file state")}
               >
-                <SelectValue>{settings.diffFilesCollapsed ? "Collapsed" : "Expanded"}</SelectValue>
+                <SelectValue>
+                  {translateWebSource(
+                    translationLocale,
+                    settings.diffFilesCollapsed ? "Collapsed" : "Expanded",
+                  )}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="expanded">
-                  Expanded
+                  {translateWebSource(translationLocale, "Expanded")}
                 </SelectItem>
                 <SelectItem hideIndicator value="collapsed">
-                  Collapsed
+                  {translateWebSource(translationLocale, "Collapsed")}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -1494,7 +1645,10 @@ export function DiffsSettingsPanel() {
       <SettingsSection id="pull-requests" title="Pull requests">
         <SettingsRow
           {...searchableSetting("proactive-panels")}
-          description="Open linked pull requests first. Otherwise, open Changes for edits to at least 3 files or 50 lines."
+          description={translateWebExtraSource(
+            translationLocale,
+            "Open linked pull requests first. Otherwise, open Changes for edits to at least 3 files or 50 lines.",
+          )}
           resetAction={
             settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled ? (
               <SettingResetButton
@@ -1513,7 +1667,10 @@ export function DiffsSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ proactivePanelsEnabled: Boolean(checked) })
               }
-              aria-label="Open pull requests and changes panels proactively"
+              aria-label={translateWebSource(
+                translationLocale,
+                "Open pull requests and changes panels proactively",
+              )}
             />
           }
         />
@@ -1529,6 +1686,7 @@ export function CompactIdleThreadsRow() {
 }
 
 function ScopedCompactIdleThreadsRow() {
+  const { locale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { targets } = useSettingsScope();
@@ -1540,7 +1698,11 @@ function ScopedCompactIdleThreadsRow() {
       settingKeys={["idleCompaction", "compactIdleThreads"]}
       mixed={idleCompaction.mixed}
       {...searchableSetting("compact-idle-threads")}
-      description="When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this."
+      title={translateWebExtraSource(locale, "Compact idle threads")}
+      description={translateWebExtraSource(
+        locale,
+        "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this.",
+      )}
       resetAction={
         globalIdleCompaction(settings) !== globalIdleCompaction(DEFAULT_UNIFIED_SETTINGS) ? (
           <SettingResetButton
@@ -1559,12 +1721,19 @@ function ScopedCompactIdleThreadsRow() {
             if (mode) updateSettings({ idleCompaction: mode.value });
           }}
         >
-          <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Compact idle threads">
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-56"
+            aria-label={translateWebExtraSource(locale, "Compact idle threads")}
+          >
             <SelectValue>
               {(value: string | null) =>
                 value === null
-                  ? "Mixed"
-                  : IDLE_COMPACTION_MODES.find((mode) => mode.value === value)?.label
+                  ? translateWebSource(locale, "Mixed")
+                  : translateWebExtraSource(
+                      locale,
+                      IDLE_COMPACTION_MODES.find((mode) => mode.value === value)?.label ?? "",
+                    )
               }
             </SelectValue>
           </SelectTrigger>
@@ -1577,7 +1746,7 @@ function ScopedCompactIdleThreadsRow() {
                 // A server from before modes has only the on/off switch, so it cannot store "Never".
                 disabled={mode.value === "off" && !idleCompaction.neverAvailable}
               >
-                {mode.label}
+                {translateWebExtraSource(locale, mode.label)}
               </SelectItem>
             ))}
           </SelectPopup>
@@ -1588,6 +1757,7 @@ function ScopedCompactIdleThreadsRow() {
 }
 
 export function ThreadsSettingsPanel() {
+  const { locale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const navigate = useNavigate();
@@ -1648,7 +1818,7 @@ export function ThreadsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection id="new-projects" title="New projects">
+      <SettingsSection id="new-projects" title={translateWebExtraSource(locale, "New projects")}>
         <SettingsRow
           serverScoped
           settingKeys={["addProjectBaseDirectory"]}
@@ -1676,7 +1846,7 @@ export function ThreadsSettingsPanel() {
               normalizeDraft={resolvePastedPath}
               placeholder={mixedAddProjectBaseDirectory ? "Mixed" : "~/"}
               spellCheck={false}
-              aria-label="Add project base directory"
+              aria-label={translateWebExtraSource(locale, "Add project base directory")}
             />
           }
         />
@@ -1700,7 +1870,7 @@ export function ThreadsSettingsPanel() {
               settingKeys={["ghqCloneLayout"]}
               checked={settings.ghqCloneLayout}
               onCheckedChange={(checked) => updateSettings({ ghqCloneLayout: Boolean(checked) })}
-              aria-label="Clone into host folders"
+              aria-label={translateWebSource(locale, "Clone into host folders")}
             />
           }
         />
@@ -1718,7 +1888,10 @@ export function ThreadsSettingsPanel() {
         <SettingsRow
           serverScoped
           {...searchableSetting("auto-resume-limited-threads")}
-          description="Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread."
+          description={translateWebSource(
+            locale,
+            "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
+          )}
           settingKeys={["autoResumeLimitedThreads"]}
           control={
             <ScopedSwitch
@@ -1727,14 +1900,17 @@ export function ThreadsSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ autoResumeLimitedThreads: Boolean(checked) })
               }
-              aria-label="Resume after usage limits"
+              aria-label={translateWebSource(locale, "Resume after usage limits")}
             />
           }
         />
         <SettingsRow
           serverScoped
           {...searchableSetting("snooze-limited-threads")}
-          description="Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset."
+          description={translateWebSource(
+            locale,
+            "Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset.",
+          )}
           settingKeys={["snoozeLimitedThreads"]}
           control={
             <ScopedSwitch
@@ -1743,7 +1919,7 @@ export function ThreadsSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ snoozeLimitedThreads: Boolean(checked) })
               }
-              aria-label="Snooze until limits reset"
+              aria-label={translateWebSource(locale, "Snooze until limits reset")}
             />
           }
         />
@@ -1776,7 +1952,7 @@ export function ThreadsSettingsPanel() {
                 onCheckedChange={(checked) =>
                   updateSettings({ sidebarAutoSettleOnMerge: Boolean(checked) })
                 }
-                aria-label="Auto-settle merged threads"
+                aria-label={translateWebSource(locale, "Auto-settle merged threads")}
               />
             }
           />
@@ -1809,7 +1985,7 @@ export function ThreadsSettingsPanel() {
                     sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
                   })
                 }
-                aria-label="Auto-settle inactive threads"
+                aria-label={translateWebSource(locale, "Auto-settle inactive threads")}
               />
             }
           />
@@ -1831,8 +2007,11 @@ export function ThreadsSettingsPanel() {
             <SettingsRow
               serverScoped
               settingKeys={["sidebarAutoSettleKeepPullRequests"]}
-              title="Keep threads with a PR"
-              description="Inactivity does not settle threads with a pull request. Merge and close still do."
+              title={translateWebExtraSource(locale, "Keep threads with a PR")}
+              description={translateWebExtraSource(
+                locale,
+                "Inactivity does not settle threads with a pull request. Merge and close still do.",
+              )}
               control={
                 <ScopedSwitch
                   settingKeys={["sidebarAutoSettleKeepPullRequests"]}
@@ -1840,7 +2019,7 @@ export function ThreadsSettingsPanel() {
                   onCheckedChange={(checked) =>
                     updateSettings({ sidebarAutoSettleKeepPullRequests: checked })
                   }
-                  aria-label="Keep threads with a PR"
+                  aria-label={translateWebExtraSource(locale, "Keep threads with a PR")}
                 />
               }
             />
@@ -1870,11 +2049,14 @@ export function ThreadsSettingsPanel() {
           control={
             !hasServerTargets ? (
               <span className="text-sm text-muted-foreground">
-                Connect an environment to choose its text generation model.
+                {translateWebSource(
+                  locale,
+                  "Connect an environment to choose its text generation model.",
+                )}
               </span>
             ) : !hasTextGenerationProvider ? (
               <span className="text-sm text-muted-foreground">
-                No text generation providers available.
+                {translateWebSource(locale, "No text generation providers available.")}
               </span>
             ) : (
               <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -1960,11 +2142,13 @@ export function ThreadsSettingsPanel() {
             serverScoped
             settingKeys={["responseStreamingMode"]}
             {...searchableSetting("response-streaming")}
-            description={
+            title={translateWebExtraSource(locale, "Response streaming")}
+            description={translateWebExtraSource(
+              locale,
               mixedResponseStreamingMode
                 ? "The selected targets use different streaming modes."
-                : RESPONSE_STREAMING_MODE_DESCRIPTIONS[settings.responseStreamingMode]
-            }
+                : RESPONSE_STREAMING_MODE_DESCRIPTIONS[settings.responseStreamingMode],
+            )}
             resetAction={
               settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode ? (
                 <SettingResetButton
@@ -1986,19 +2170,26 @@ export function ThreadsSettingsPanel() {
                   }
                 }}
               >
-                <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Response streaming">
+                <SelectTrigger
+                  size="sm"
+                  className="w-full sm:w-56"
+                  aria-label={translateWebExtraSource(locale, "Response streaming")}
+                >
                   <SelectValue>
                     {(value: ResponseStreamingMode | null) =>
-                      value === null ? "Mixed" : RESPONSE_STREAMING_MODE_LABELS[value]
+                      translateWebExtraSource(
+                        locale,
+                        value === null ? "Mixed" : RESPONSE_STREAMING_MODE_LABELS[value],
+                      )
                     }
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   <SelectItem hideIndicator value="turn">
-                    {RESPONSE_STREAMING_MODE_LABELS.turn}
+                    {translateWebExtraSource(locale, RESPONSE_STREAMING_MODE_LABELS.turn)}
                   </SelectItem>
                   <SelectItem hideIndicator value="paragraph">
-                    {RESPONSE_STREAMING_MODE_LABELS.paragraph}
+                    {translateWebExtraSource(locale, RESPONSE_STREAMING_MODE_LABELS.paragraph)}
                   </SelectItem>
                 </SelectPopup>
               </Select>
@@ -2011,6 +2202,7 @@ export function ThreadsSettingsPanel() {
 }
 
 export function MaintenanceSettingsPanel() {
+  const { locale: translationLocale } = useI18n();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { scope, environment, connectedEnvironments } = useSettingsScope();
@@ -2025,7 +2217,10 @@ export function MaintenanceSettingsPanel() {
           serverScoped
           settingKeys={["enableProviderUpdateChecks"]}
           {...searchableSetting("provider-update-checks")}
-          description="Check installed provider CLIs for newer available versions and fetch model catalog updates. When off, new models may not appear."
+          description={translateWebExtraSource(
+            translationLocale,
+            "Check installed provider CLIs for newer available versions and fetch model catalog updates. When off, new models may not appear.",
+          )}
           resetAction={
             settings.enableProviderUpdateChecks !==
             DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks ? (
@@ -2046,18 +2241,22 @@ export function MaintenanceSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ enableProviderUpdateChecks: Boolean(checked) })
               }
-              aria-label="Check provider versions"
+              aria-label={translateWebExtraSource(translationLocale, "Check provider versions")}
             />
           }
         />
         <SettingsRow
           {...searchableSetting("continue-threads-after-server-update")}
+          title={translateWebExtraSource(translationLocale, "Continue threads after restarts")}
           serverScoped
           settingKeys={["continueThreadsAfterServerUpdate"]}
           description="Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments."
           status={
             !hasServerTargets
-              ? "All selected connected environments must support restart continuation."
+              ? translateWebExtraSource(
+                  translationLocale,
+                  "All selected connected environments must support restart continuation.",
+                )
               : undefined
           }
           resetAction={
@@ -2083,7 +2282,10 @@ export function MaintenanceSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ continueThreadsAfterServerUpdate: Boolean(checked) })
               }
-              aria-label="Continue threads after restarts"
+              aria-label={translateWebExtraSource(
+                translationLocale,
+                "Continue threads after restarts",
+              )}
             />
           }
         />
@@ -2098,11 +2300,12 @@ export function MaintenanceSettingsPanel() {
       <SettingsSection id="diagnostics-section" title="Diagnostics">
         <SettingsRow
           {...searchableSetting("diagnostics")}
-          description={
+          description={translateWebExtraSource(
+            translationLocale,
             isEnvironmentScope
               ? "Inspect processes, resource use, and logs on this environment."
-              : "Inspect processes, resource use, and logs on one environment at a time."
-          }
+              : "Inspect processes, resource use, and logs on one environment at a time.",
+          )}
           control={
             <Button
               render={
@@ -2111,7 +2314,7 @@ export function MaintenanceSettingsPanel() {
               size="sm"
               variant="outline"
             >
-              View diagnostics
+              {translateWebSource(translationLocale, "View diagnostics")}
             </Button>
           }
         />
@@ -2121,17 +2324,20 @@ export function MaintenanceSettingsPanel() {
 }
 
 export function AboutSettingsPanel() {
+  const { locale: translationLocale, t } = useI18n();
   const primaryPolicy = usePrimaryManagedPolicy();
   // The Welcome page sets up this computer, so it needs one.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const telemetryOff = managedTelemetryOffMessage(primaryPolicy);
+  const telemetryOff = managedTelemetryOffMessage(primaryPolicy, t);
   return (
     <SettingsPageContainer>
       <SettingsSection id="about" title="App">
         {primaryPolicy ? (
           <SettingsRow
-            title="Organization"
-            description={`This environment is managed by ${primaryPolicy.organization}. Some settings and features follow its policy.`}
+            title={t("settings.v017.organizationLabel")}
+            description={t("settings.v017.organizationDescription", {
+              organization: primaryPolicy.organization,
+            })}
             control={
               primaryPolicy.supportUrl ? (
                 <Button
@@ -2141,7 +2347,7 @@ export function AboutSettingsPanel() {
                   size="sm"
                   variant="outline"
                 >
-                  Get help
+                  {translateWebSource(translationLocale, "Get help")}
                 </Button>
               ) : null
             }
@@ -2165,7 +2371,7 @@ export function AboutSettingsPanel() {
             description="See your agents, import projects, and set up your phone."
             control={
               <Button size="sm" variant="outline" render={<Link to="/welcome" />}>
-                Open
+                {translateWebSource(translationLocale, "Open")}
               </Button>
             }
           />
@@ -2174,11 +2380,14 @@ export function AboutSettingsPanel() {
 
       <SettingsSection id="legal" title="Legal">
         <SettingsRow
-          {...searchableSetting("privacy-policy")}
+          {...searchableSetting("privacy-policy", translationLocale)}
           description={
             telemetryOff === undefined
-              ? "How we handle your data, including the anonymous usage data T3 Code collects."
-              : `How we handle your data. ${telemetryOff}`
+              ? translateWebExtraSource(
+                  translationLocale,
+                  "How we handle your data, including the anonymous usage data T3 Code collects.",
+                )
+              : `${translateWebSource(translationLocale, "How we handle your data.")} ${telemetryOff}`
           }
           control={
             <Button
@@ -2186,20 +2395,23 @@ export function AboutSettingsPanel() {
               size="sm"
               variant="outline"
             >
-              View policy
+              {translateWebSource(translationLocale, "View policy")}
             </Button>
           }
         />
         <SettingsRow
-          {...searchableSetting("open-source-licenses")}
-          description="Notices for dependencies, assets, and optional tools used by T3 Code."
+          {...searchableSetting("open-source-licenses", translationLocale)}
+          description={translateWebExtraSource(
+            translationLocale,
+            "Notices for dependencies, assets, and optional tools used by T3 Code.",
+          )}
           control={
             <Button
               render={<Link to="/settings/open-source-licenses" />}
               size="sm"
               variant="outline"
             >
-              View licenses
+              {translateWebSource(translationLocale, "View licenses")}
             </Button>
           }
         />

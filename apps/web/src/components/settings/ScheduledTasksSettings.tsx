@@ -1,3 +1,7 @@
+import { translateWebExtraSource } from "~/i18n/webExtraMessages";
+import { managedCapabilityDenial } from "../../i18n/managedPolicyMessages";
+import { translateWebSource } from "../../i18n/messages";
+import { useI18n } from "../../i18n/WebI18nContext";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
@@ -80,11 +84,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ConnectionStatusDot, connectionPhaseDotClassName } from "../ConnectionStatusDot";
-import {
-  AuthOrchestrationOperateScope,
-  clampManagedRuntimeMode,
-  managedCapabilityDenial,
-} from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, clampManagedRuntimeMode } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
@@ -203,16 +203,19 @@ function WebhookFiltersField({
   filters: ReadonlyArray<WebhookFilterDraft>;
   onChange: (filters: ReadonlyArray<WebhookFilterDraft>) => void;
 }) {
+  const { locale: sourceLocale } = useI18n();
   const update = (index: number, patch: Partial<WebhookFilterDraft>) =>
     onChange(filters.map((filter, at) => (at === index ? { ...filter, ...patch } : filter)));
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <Label>Filters</Label>
+          <Label>{translateWebSource(sourceLocale, "Filters")}</Label>
           <p className="text-sm text-muted-foreground">
-            Run only when every filter matches. Other requests are logged as filtered. Separate “is
-            one of” values with commas; a value can't contain a comma.
+            {translateWebSource(
+              sourceLocale,
+              "Run only when every filter matches. Other requests are logged as filtered. Separate “is one of” values with commas; a value can't contain a comma.",
+            )}
           </p>
         </div>
         <Button
@@ -223,7 +226,7 @@ function WebhookFiltersField({
           onClick={() => onChange([...filters, emptyWebhookFilterDraft()])}
         >
           <PlusIcon />
-          Add filter
+          {translateWebSource(sourceLocale, "Add filter")}
         </Button>
       </div>
       {filters.map((filter, index) => (
@@ -234,7 +237,11 @@ function WebhookFiltersField({
           <div className="flex items-center gap-2">
             <div className="grid min-w-0 flex-1 grid-cols-1">
               <Input
-                aria-label={`Filter ${index + 1} path`}
+                aria-label={
+                  sourceLocale === "zh-CN"
+                    ? `筛选条件 ${index + 1} 路径`
+                    : `Filter ${index + 1} path`
+                }
                 placeholder="body.action"
                 value={filter.path}
                 onChange={(event) => update(index, { path: event.target.value })}
@@ -243,7 +250,11 @@ function WebhookFiltersField({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`Remove filter ${index + 1}`}
+              aria-label={
+                sourceLocale === "zh-CN"
+                  ? `移除筛选条件 ${index + 1}`
+                  : `Remove filter ${index + 1}`
+              }
               onClick={() => onChange(removeWebhookFilterDraft(filters, filter.id))}
             >
               <Trash2Icon />
@@ -258,16 +269,26 @@ function WebhookFiltersField({
               }}
             >
               <div className="grid w-44 shrink-0 grid-cols-1">
-                <SelectTrigger size="sm" aria-label={`Filter ${index + 1} test`}>
+                <SelectTrigger
+                  size="sm"
+                  aria-label={
+                    sourceLocale === "zh-CN"
+                      ? `筛选条件 ${index + 1} 条件`
+                      : `Filter ${index + 1} test`
+                  }
+                >
                   <SelectValue>
-                    {WEBHOOK_FILTER_OPS.find((option) => option.op === filter.op)?.label}
+                    {translateWebSource(
+                      sourceLocale,
+                      WEBHOOK_FILTER_OPS.find((option) => option.op === filter.op)?.label ?? "",
+                    )}
                   </SelectValue>
                 </SelectTrigger>
               </div>
               <SelectPopup>
                 {WEBHOOK_FILTER_OPS.map((option) => (
                   <SelectItem key={option.op} value={option.op}>
-                    {option.label}
+                    {translateWebSource(sourceLocale, option.label)}
                   </SelectItem>
                 ))}
               </SelectPopup>
@@ -275,7 +296,11 @@ function WebhookFiltersField({
             {filter.op === "exists" ? null : (
               <div className="grid min-w-0 flex-1 grid-cols-1">
                 <Input
-                  aria-label={`Filter ${index + 1} value`}
+                  aria-label={
+                    sourceLocale === "zh-CN"
+                      ? `筛选条件 ${index + 1} 值`
+                      : `Filter ${index + 1} value`
+                  }
                   placeholder={filter.op === "in" ? "opened, reopened" : "opened"}
                   value={filter.value}
                   onChange={(event) => update(index, { value: event.target.value })}
@@ -326,10 +351,19 @@ const ONCE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
+const ONCE_FORMATTER_ZH_CN = new Intl.DateTimeFormat("zh-CN", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
 
-export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
+export function scheduleLabel(schedule: ScheduledTaskSchedule, chinese = false): string {
   if (schedule.type === "webhook") return "On webhook";
-  if (schedule.type === "once") return `Once, ${ONCE_FORMATTER.format(new Date(schedule.runAt))}`;
+  if (schedule.type === "once") {
+    const date = new Date(schedule.runAt);
+    return chinese
+      ? `单次，${ONCE_FORMATTER_ZH_CN.format(date)}`
+      : `Once, ${ONCE_FORMATTER.format(date)}`;
+  }
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -347,26 +381,31 @@ export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
 }
 
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
-function relativeLabel(value: string | null, nowMs: number): string {
-  if (!value) return "Not scheduled";
+function relativeLabel(value: string | null, nowMs: number, chinese = false): string {
+  if (!value) return chinese ? "未安排" : "Not scheduled";
   const diffMs = new Date(value).getTime() - nowMs;
   if (diffMs <= 0) {
     const relative = formatRelativeTime(value, nowMs);
-    if (!relative) return "Not scheduled";
+    if (!relative) return chinese ? "未安排" : "Not scheduled";
+    if (chinese)
+      return relative.value === "just now"
+        ? "刚刚"
+        : `${relative.value.replace("m", "分钟").replace("h", "小时").replace("d", "天")}前`;
     return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
   }
   const minutes = Math.ceil(diffMs / 60_000);
-  if (minutes < 2) return "in under a minute";
-  if (minutes < 60) return `in ${minutes}m`;
+  if (minutes < 2) return chinese ? "不到 1 分钟后" : "in under a minute";
+  if (minutes < 60) return chinese ? `${minutes} 分钟后` : `in ${minutes}m`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `in ${hours}h`;
-  return `in ${Math.round(hours / 24)}d`;
+  if (hours < 24) return chinese ? `${hours} 小时后` : `in ${hours}h`;
+  return chinese ? `${Math.round(hours / 24)} 天后` : `in ${Math.round(hours / 24)}d`;
 }
 
 // Use the label's minute tick because the compiler caches render-time Date.now() on the timestamp.
 export function ScheduledRelativeLabel(props: { value: string | null }) {
+  const { locale } = useI18n();
   const nowMinute = useNowMinute();
-  return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
+  return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`), locale === "zh-CN");
 }
 
 function deliveryOutcomeVariant(outcome: string) {
@@ -395,6 +434,7 @@ export function ScheduledTasksSettings(target: {
   readonly environmentId?: EnvironmentId;
   readonly taskId?: ScheduledTaskId | undefined;
 }) {
+  const { locale: sourceLocale } = useI18n();
   const { scope, environments, connectedEnvironments, environment } = useSettingsScope();
   const [editor, setEditor] = useState<{
     environmentId: EnvironmentId;
@@ -458,7 +498,7 @@ export function ScheduledTasksSettings(target: {
   return (
     <SettingsPageContainer>
       <SettingsSection
-        title="Scheduled tasks"
+        title={translateWebSource(sourceLocale, "Scheduled tasks")}
         variant="plain"
         headerAction={
           <Button
@@ -471,12 +511,12 @@ export function ScheduledTasksSettings(target: {
             }
           >
             <PlusIcon className="size-3" />
-            New task
+            {translateWebSource(sourceLocale, "New task")}
           </Button>
         }
       >
         {scope.kind === "unavailable" ? (
-          <SettingsSection title="Unavailable selection">
+          <SettingsSection title={translateWebSource(sourceLocale, "Unavailable selection")}>
             <SettingsRow title={scope.message} />
           </SettingsSection>
         ) : environments.length === 0 ? (
@@ -485,8 +525,15 @@ export function ScheduledTasksSettings(target: {
               <EmptyMedia variant="icon">
                 <Clock3Icon />
               </EmptyMedia>
-              <EmptyTitle>No environments available</EmptyTitle>
-              <EmptyDescription>Connect an environment to manage scheduled tasks.</EmptyDescription>
+              <EmptyTitle>
+                {translateWebSource(sourceLocale, "No environments available")}
+              </EmptyTitle>
+              <EmptyDescription>
+                {translateWebSource(
+                  sourceLocale,
+                  "Connect an environment to manage scheduled tasks.",
+                )}
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : environments.length > 1 ? (
@@ -538,6 +585,7 @@ function ScheduledTaskEnvironmentList({
   readonly taskId: ScheduledTaskId | undefined;
   readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
 }) {
+  const { locale: sourceLocale } = useI18n();
   const { scope, environments } = useSettingsScope();
   const connectedIds = environments.flatMap((environment) =>
     environment.connection.phase === "connected" && environment.serverConfig !== null
@@ -618,20 +666,26 @@ function ScheduledTaskEnvironmentList({
       })}
       {taskId && linkedState?.tasks && linkedState.error === null && !linkedTask ? (
         <SettingsRow
-          title="Task unavailable"
-          description="This task was deleted or belongs to a different project. Check your project filter."
+          title={translateWebSource(sourceLocale, "Task unavailable")}
+          description={translateWebSource(
+            sourceLocale,
+            "This task was deleted or belongs to a different project. Check your project filter.",
+          )}
           role="status"
         />
       ) : null}
       {populated.length === 0 && loaded.length > 0 ? (
         <SettingsRow
-          title="No scheduled tasks"
-          description="No tasks match this environment and project selection."
+          title={translateWebSource(sourceLocale, "No scheduled tasks")}
+          description={translateWebSource(
+            sourceLocale,
+            "No tasks match this environment and project selection.",
+          )}
         />
       ) : null}
       {Object.entries(summaries).map(([label, entries]) => {
         if (entries.length === 0) return null;
-        const summary = `${label} ${entries.join(", ")}`;
+        const summary = `${translateWebExtraSource(sourceLocale, label)} ${entries.join(", ")}`;
         return (
           <Tooltip key={label}>
             <TooltipTrigger
@@ -679,6 +733,7 @@ function ScheduledTaskEnvironmentSection({
   readonly taskId?: ScheduledTaskId | undefined;
   readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
 }) {
+  const { locale: sourceLocale, t } = useI18n();
   const { scope } = useSettingsScope();
   const connected =
     environment.connection.phase === "connected" && environment.serverConfig !== null;
@@ -697,6 +752,7 @@ function ScheduledTaskEnvironmentSection({
   return (
     <SettingsSection
       title={environment.label}
+      localizeTitle={false}
       hideTitle
       icon={
         <EnvironmentMachineIcon
@@ -707,26 +763,38 @@ function ScheduledTaskEnvironmentSection({
     >
       {!connected ? (
         <SettingsRow
-          title="Environment disconnected"
-          description={`Reconnect ${environment.label} to view its scheduled tasks.`}
+          title={translateWebSource(sourceLocale, "Environment disconnected")}
+          description={t("webExtra.tasks.reconnect", { environment: environment.label })}
         />
       ) : tasksQuery.error ? (
-        <SettingsRow title="Could not load scheduled tasks" description={tasksQuery.error} />
+        <SettingsRow
+          title={translateWebSource(sourceLocale, "Could not load scheduled tasks")}
+          description={tasksQuery.error}
+        />
       ) : !tasks ? (
-        <SettingsRow title="Loading scheduled tasks…" role="status" />
+        <SettingsRow
+          title={translateWebSource(sourceLocale, "Loading scheduled tasks…")}
+          role="status"
+        />
       ) : (
         <>
           {taskId && !linkedTask ? (
             <SettingsRow
-              title="Task unavailable"
-              description="This task was deleted or belongs to a different project. Check your project filter."
+              title={translateWebSource(sourceLocale, "Task unavailable")}
+              description={translateWebSource(
+                sourceLocale,
+                "This task was deleted or belongs to a different project. Check your project filter.",
+              )}
               role="status"
             />
           ) : null}
           {tasks.length === 0 ? (
             <SettingsRow
-              title="No scheduled tasks"
-              description="No tasks match this environment and project selection."
+              title={translateWebSource(sourceLocale, "No scheduled tasks")}
+              description={translateWebSource(
+                sourceLocale,
+                "No tasks match this environment and project selection.",
+              )}
             />
           ) : (
             tasks.map((task) => (
@@ -753,6 +821,7 @@ function ScheduledTaskRow({
   readonly task: ScheduledTask;
   readonly onEdit: () => void;
 }) {
+  const { locale: sourceLocale, t } = useI18n();
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -782,7 +851,7 @@ function ScheduledTaskRow({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not update scheduled task",
+          title: translateWebExtraSource(sourceLocale, "Could not update scheduled task"),
           description: String(squashAtomCommandFailure(result)),
         }),
       );
@@ -790,24 +859,25 @@ function ScheduledTaskRow({
   };
   return (
     <SettingsRow
-      title={task.title}
+      title={<span>{task.title}</span>}
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule)} ·{" "}
+            {scheduleLabel(task.schedule, sourceLocale === "zh-CN")} ·{" "}
             {task.blockedByPolicy !== undefined ? (
               task.blockedByPolicy
             ) : !task.enabled ? (
-              "Paused"
+              translateWebExtraSource(sourceLocale, "Paused")
             ) : isWebhook ? (
-              "Listening"
+              translateWebExtraSource(sourceLocale, "Listening")
             ) : task.nextRunAt ? (
               <>
-                Next run <ScheduledRelativeLabel value={task.nextRunAt} />
+                {translateWebSource(sourceLocale, "Next run")}{" "}
+                <ScheduledRelativeLabel value={task.nextRunAt} />
               </>
             ) : (
-              "Not scheduled"
+              translateWebExtraSource(sourceLocale, "Not scheduled")
             )}
           </span>
           {task.lastRunStatus !== "never" ? (
@@ -824,7 +894,7 @@ function ScheduledTaskRow({
           <Switch
             checked={task.enabled}
             disabled={busy || !canOperate}
-            aria-label={`Enable ${task.title}`}
+            aria-label={t("webExtra.tasks.enable", { title: task.title })}
             onCheckedChange={() => void act("toggle")}
           />
           <Menu>
@@ -834,7 +904,7 @@ function ScheduledTaskRow({
                   size="icon-sm"
                   variant="ghost"
                   disabled={busy || !canOperate}
-                  aria-label={`Actions for ${task.title}`}
+                  aria-label={t("webExtra.tasks.actions", { title: task.title })}
                 />
               }
             >
@@ -843,23 +913,23 @@ function ScheduledTaskRow({
             <MenuPopup align="end">
               <MenuItem onClick={onEdit}>
                 <PencilIcon />
-                Edit
+                {translateWebSource(sourceLocale, "Edit")}
               </MenuItem>
               {isWebhook ? (
                 <MenuItem onClick={() => setDeliveriesOpen(true)}>
                   <InboxIcon />
-                  Deliveries
+                  {translateWebSource(sourceLocale, "Deliveries")}
                 </MenuItem>
               ) : (
                 <MenuItem onClick={() => void act("run")}>
                   <PlayIcon />
-                  Run now
+                  {translateWebSource(sourceLocale, "Run now")}
                 </MenuItem>
               )}
               <MenuSeparator />
               <MenuItem onClick={() => void act("delete")}>
                 <Trash2Icon />
-                Delete
+                {translateWebSource(sourceLocale, "Delete")}
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -905,6 +975,7 @@ function WebhookDeliveriesDialog({
   readonly task: ScheduledTask;
   readonly onClose: () => void;
 }) {
+  const { locale: sourceLocale } = useI18n();
   const deliveriesQuery = useEnvironmentQuery(
     serverEnvironment.scheduledTaskWebhookDeliveries({
       environmentId,
@@ -935,14 +1006,18 @@ function WebhookDeliveriesDialog({
     >
       <DialogPopup className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Deliveries · {task.title}</DialogTitle>
-          <DialogDescription>Recent requests to this task's webhook URL.</DialogDescription>
+          <DialogTitle>
+            {translateWebSource(sourceLocale, "Deliveries ·")} {task.title}
+          </DialogTitle>
+          <DialogDescription>
+            {translateWebSource(sourceLocale, "Recent requests to this task's webhook URL.")}
+          </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
           {selectedId !== null && selected === null && selectedQuery.error === null ? (
             <p className="text-sm text-muted-foreground" role="status">
-              Loading delivery…
+              {translateWebSource(sourceLocale, "Loading delivery…")}
             </p>
           ) : selected ? (
             <div className="space-y-4">
@@ -952,13 +1027,17 @@ function WebhookDeliveriesDialog({
                     selected.pendingWindow ? "coalesced" : selected.outcome,
                   )}
                 >
-                  {webhookDeliveryLabel(selected)}
+                  {webhookDeliveryLabel(selected, (source) =>
+                    translateWebExtraSource(sourceLocale, source),
+                  )}
                 </Badge>
                 <span>
                   {selected.method} · <ScheduledRelativeLabel value={selected.receivedAt} />
                 </span>
                 {selected.signatureVerified ? (
-                  <span className="text-muted-foreground">Signature verified</span>
+                  <span className="text-muted-foreground">
+                    {translateWebSource(sourceLocale, "Signature verified")}
+                  </span>
                 ) : null}
               </div>
               {selected.error ? (
@@ -977,32 +1056,43 @@ function WebhookDeliveriesDialog({
               >
                 {selected.renderedPrompt ??
                   (selected.pendingWindow
-                    ? "Run scheduled when the window closes; no run started yet."
-                    : "No run was started for this request.")}
+                    ? translateWebExtraSource(
+                        sourceLocale,
+                        "Run scheduled when the window closes; no run started yet.",
+                      )
+                    : translateWebExtraSource(
+                        sourceLocale,
+                        "No run was started for this request.",
+                      ))}
               </DeliveryBlock>
               {selected.missingFields.length > 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  Empty placeholders: {selected.missingFields.join(", ")}
+                  {translateWebSource(sourceLocale, "Empty placeholders:")}{" "}
+                  {selected.missingFields.join(", ")}
                 </p>
               ) : null}
-              <DeliveryBlock title="Headers">
+              <DeliveryBlock title={translateWebSource(sourceLocale, "Headers")}>
                 {Object.entries(selected.headers)
                   .map(([name, value]) => `${name}: ${value}`)
                   .join("\n")}
               </DeliveryBlock>
               {selected.query ? (
-                <DeliveryBlock title="Query">{selected.query}</DeliveryBlock>
+                <DeliveryBlock title={translateWebSource(sourceLocale, "Query")}>
+                  {selected.query}
+                </DeliveryBlock>
               ) : null}
               <DeliveryBlock title={selected.bodyTruncated ? "Body (truncated)" : "Body"}>
-                {selected.body || "(empty)"}
+                {selected.body || translateWebSource(sourceLocale, "(empty)")}
               </DeliveryBlock>
             </div>
           ) : selectedId !== null ? null : deliveries === null ? (
             <p className="text-sm text-muted-foreground" role="status">
-              Loading deliveries…
+              {translateWebSource(sourceLocale, "Loading deliveries…")}
             </p>
           ) : deliveries.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No requests yet.</p>
+            <p className="text-sm text-muted-foreground">
+              {translateWebSource(sourceLocale, "No requests yet.")}
+            </p>
           ) : (
             <ul className="divide-y divide-border">
               {deliveries.map((delivery) => (
@@ -1017,7 +1107,9 @@ function WebhookDeliveriesDialog({
                         delivery.pendingWindow ? "coalesced" : delivery.outcome,
                       )}
                     >
-                      {webhookDeliveryLabel(delivery)}
+                      {webhookDeliveryLabel(delivery, (source) =>
+                        translateWebExtraSource(sourceLocale, source),
+                      )}
                     </Badge>
                     <span>{delivery.method}</span>
                     <span className="text-muted-foreground">
@@ -1028,7 +1120,8 @@ function WebhookDeliveriesDialog({
                     ) : null}
                     {delivery.missingFields.length > 0 ? (
                       <span className="text-muted-foreground">
-                        {delivery.missingFields.length} empty placeholder
+                        {delivery.missingFields.length}{" "}
+                        {translateWebSource(sourceLocale, "empty placeholder")}
                         {delivery.missingFields.length === 1 ? "" : "s"}
                       </span>
                     ) : null}
@@ -1041,7 +1134,7 @@ function WebhookDeliveriesDialog({
         <DialogFooter>
           {selectedId !== null ? (
             <Button variant="outline" size="sm" onClick={() => setSelectedId(null)}>
-              Back
+              {translateWebSource(sourceLocale, "Back")}
             </Button>
           ) : (
             <Button
@@ -1050,10 +1143,12 @@ function WebhookDeliveriesDialog({
               disabled={deliveriesQuery.isPending}
               onClick={deliveriesQuery.refresh}
             >
-              Refresh
+              {translateWebSource(sourceLocale, "Refresh")}
             </Button>
           )}
-          <DialogClose render={<Button size="sm" />}>Done</DialogClose>
+          <DialogClose render={<Button size="sm" />}>
+            {translateWebSource(sourceLocale, "Done")}
+          </DialogClose>
         </DialogFooter>
       </DialogPopup>
     </Dialog>
@@ -1061,9 +1156,10 @@ function WebhookDeliveriesDialog({
 }
 
 function DeliveryBlock({ title, children }: { title: string; children: ReactNode }) {
+  const { locale } = useI18n();
   return (
     <div className="space-y-1">
-      <Label>{title}</Label>
+      <Label>{translateWebExtraSource(locale, title)}</Label>
       <pre className="max-h-64 overflow-auto rounded-md bg-muted p-2 text-xs whitespace-pre-wrap break-all">
         {children}
       </pre>
@@ -1078,6 +1174,7 @@ function WebhookEndpointField({
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
 }) {
+  const { locale: sourceLocale } = useI18n();
   const canRotate = useAtomValue(
     serverEnvironment.rotateScheduledTaskWebhookToken.permissionAtom(environmentId),
   );
@@ -1089,14 +1186,30 @@ function WebhookEndpointField({
   const [rotating, setRotating] = useState(false);
   const endpoint = task?.webhook;
   if (!task || !endpoint) {
-    return <p className="text-sm text-muted-foreground">The URL appears after you save.</p>;
+    return (
+      <p className="text-sm text-muted-foreground">
+        {translateWebSource(sourceLocale, "The URL appears after you save.")}
+      </p>
+    );
   }
   const { address: url, copyable, note } = webhookAddress(endpoint, httpBaseUrl);
   const rotateUrl = async () => {
     const confirmed =
-      (await requestConfirmDialog("Rotate this webhook URL?\nThe current URL stops working.", {
-        variant: "destructive",
-      })) ?? window.confirm("Rotate this webhook URL? The current URL stops working.");
+      (await requestConfirmDialog(
+        translateWebExtraSource(
+          sourceLocale,
+          "Rotate this webhook URL?\nThe current URL stops working.",
+        ),
+        {
+          variant: "destructive",
+        },
+      )) ??
+      window.confirm(
+        translateWebExtraSource(
+          sourceLocale,
+          "Rotate this webhook URL? The current URL stops working.",
+        ),
+      );
     if (!confirmed) return;
     setRotating(true);
     const result = await rotate({ environmentId, input: { id: task.id } });
@@ -1105,7 +1218,7 @@ function WebhookEndpointField({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not rotate webhook URL",
+          title: translateWebExtraSource(sourceLocale, "Could not rotate webhook URL"),
           description: String(squashAtomCommandFailure(result)),
         }),
       );
@@ -1116,7 +1229,7 @@ function WebhookEndpointField({
       <div className="flex items-center gap-2">
         <Input
           readOnly
-          aria-label="Webhook URL"
+          aria-label={translateWebSource(sourceLocale, "Webhook URL")}
           value={url}
           onFocus={(event) => event.currentTarget.select()}
         />
@@ -1137,7 +1250,7 @@ function WebhookEndpointField({
           disabled={rotating || !canRotate}
           onClick={() => void rotateUrl()}
         >
-          Rotate
+          {translateWebSource(sourceLocale, "Rotate")}
         </Button>
       </div>
       {note !== null ? <p className="text-xs text-muted-foreground">{note}</p> : null}
@@ -1147,15 +1260,22 @@ function WebhookEndpointField({
 }
 
 function WebhookDeliveryMode({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const { locale: sourceLocale } = useI18n();
   const cloudLink = usePrimaryCloudLinkState();
   if (cloudLink.target?.environmentId !== environmentId || cloudLink.data === null) return null;
   return (
     <p className="text-xs text-muted-foreground">
       {cloudLink.data.holdWebhooksWhileOffline
-        ? "Held for up to 24 hours while this environment is offline. "
-        : "Forwarded live. Requests fail while this environment is offline. "}
+        ? translateWebExtraSource(
+            sourceLocale,
+            "Held for up to 24 hours while this environment is offline. ",
+          )
+        : translateWebExtraSource(
+            sourceLocale,
+            "Forwarded live. Requests fail while this environment is offline. ",
+          )}
       <Link to="/settings/access" className="underline underline-offset-2">
-        Change in Sharing & access
+        {translateWebSource(sourceLocale, "Change in Sharing & access")}
       </Link>
     </p>
   );
@@ -1216,6 +1336,8 @@ function ScheduledTaskDestination({
   /** Absent on servers that predate thread modes. */
   readonly onThreadModeChange: ((mode: ScheduledTaskThreadMode) => void) | undefined;
 }) {
+  const { locale } = useI18n();
+  const tx = (source: string) => translateWebSource(locale, source);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = threadId === null ? null : scopeThreadRef(environmentId, threadId);
@@ -1227,10 +1349,10 @@ function ScheduledTaskDestination({
   const thread = shell ?? family.data?.threads.find((row) => row.id === threadId);
   const currentLabel =
     ref !== null
-      ? thread?.title.trim() || `Thread ${ref.threadId}`
+      ? thread?.title.trim() || tx("Thread {id}").replace("{id}", () => ref.threadId)
       : threadMode === "new_thread"
-        ? "New thread each run"
-        : "Started by the first run";
+        ? tx("New thread each run")
+        : tx("Started by the first run");
   const shells = useVisibleThreadShells(open);
   // Mounts older settled threads matching the query, which shells may leave out.
   useThreadSearch(open && projectId ? [environmentId] : [], query, {
@@ -1264,19 +1386,19 @@ function ScheduledTaskDestination({
           ? "Each run continues this conversation, in its workspace and with its current model."
           : "Each run starts a fresh session in this thread, without earlier runs' context.";
   return (
-    <Field label="Destination" htmlFor="scheduled-task-destination">
+    <Field label={tx("Destination")} htmlFor="scheduled-task-destination">
       {onThreadModeChange ? (
         <Select
           value={threadMode}
           onValueChange={(value) => onThreadModeChange(value as ScheduledTaskThreadMode)}
         >
           <SelectTrigger size="sm" id="scheduled-task-destination">
-            <SelectValue>{THREAD_MODE_LABELS[threadMode]}</SelectValue>
+            <SelectValue>{tx(THREAD_MODE_LABELS[threadMode])}</SelectValue>
           </SelectTrigger>
           <SelectPopup>
             {(Object.keys(THREAD_MODE_LABELS) as ScheduledTaskThreadMode[]).map((mode) => (
               <SelectItem key={mode} value={mode}>
-                {THREAD_MODE_LABELS[mode]}
+                {tx(THREAD_MODE_LABELS[mode])}
               </SelectItem>
             ))}
           </SelectPopup>
@@ -1308,7 +1430,7 @@ function ScheduledTaskDestination({
                 ? "scheduled-task-destination-thread"
                 : "scheduled-task-destination"
             }
-            aria-label={onThreadModeChange ? "Destination thread" : undefined}
+            aria-label={onThreadModeChange ? tx("Destination thread") : undefined}
             disabled={disabled}
             render={<Button variant="outline" size="sm" />}
             className="w-full justify-between"
@@ -1319,21 +1441,21 @@ function ScheduledTaskDestination({
           </ComboboxTrigger>
           <ComboboxPopup align="start" side="bottom" className="w-80">
             <ComboboxSearchInput
-              aria-label="Search threads"
-              placeholder="Search all threads..."
+              aria-label={tx("Search threads")}
+              placeholder={tx("Search all threads...")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
-            <ComboboxEmpty>No threads found.</ComboboxEmpty>
+            <ComboboxEmpty>{tx("No threads found.")}</ComboboxEmpty>
             <ComboboxList className="max-h-72">
               {items.map((value, index) => (
                 <ComboboxItem key={value} index={index} value={value}>
                   <span className="block truncate">
                     {value === NEW_THREAD_DESTINATION
-                      ? "New thread each run"
+                      ? tx("New thread each run")
                       : value === threadId
                         ? currentLabel
-                        : threads.find((row) => row.id === value)?.title || "Untitled thread"}
+                        : threads.find((row) => row.id === value)?.title || tx("Untitled thread")}
                   </span>
                 </ComboboxItem>
               ))}
@@ -1342,9 +1464,11 @@ function ScheduledTaskDestination({
         </Combobox>
       ) : null}
       <div className="space-y-1 text-sm">
-        <p className="text-muted-foreground">{detail}</p>
+        <p className="text-muted-foreground">{tx(detail)}</p>
         {threadMode !== "new_thread" ? (
-          <p className="text-muted-foreground">Deleting the thread also deletes this task.</p>
+          <p className="text-muted-foreground">
+            {tx("Deleting the thread also deletes this task.")}
+          </p>
         ) : null}
       </div>
     </Field>
@@ -1364,6 +1488,7 @@ function ScheduledTaskEditorForm({
   readonly onSavingChange: (saving: boolean) => void;
   readonly onClose: () => void;
 }) {
+  const { locale: sourceLocale, t } = useI18n();
   const { scope, connectedEnvironments } = useSettingsScope();
   const [environmentId, setEnvironmentId] = useState(initialEnvironmentId);
   const environment = useEnvironment(environmentId);
@@ -1393,7 +1518,7 @@ function ScheduledTaskEditorForm({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
-  const webhookDenial = managedCapabilityDenial(useManagedPolicy(environmentId), "webhookTasks");
+  const webhookDenial = managedCapabilityDenial(useManagedPolicy(environmentId), "webhookTasks", t);
   const [draft, setDraft] = useState<DraftState>(() =>
     task
       ? taskToDraft(task)
@@ -1448,7 +1573,7 @@ function ScheduledTaskEditorForm({
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title,
+        title: translateWebExtraSource(sourceLocale, title),
         description: error instanceof Error ? error.message : String(error),
       }),
     );
@@ -1471,7 +1596,10 @@ function ScheduledTaskEditorForm({
       !projects.some((project) => project.id === selectedProjectId) ||
       selection === null
     ) {
-      reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
+      reportFailure(
+        "Scheduled task is incomplete",
+        translateWebExtraSource(sourceLocale, "Add a title, prompt, project, and model."),
+      );
       return;
     }
     const parsedFilters = parseWebhookFilterDrafts(draft.filters);
@@ -1481,7 +1609,12 @@ function ScheduledTaskEditorForm({
     }
     const schedule = scheduleFromDraft(draft);
     if (schedule === null) {
-      for (const error of scheduleDraftErrors(draft)) reportFailure(error.title, error.description);
+      for (const error of scheduleDraftErrors(draft)) {
+        reportFailure(
+          translateWebSource(sourceLocale, error.title),
+          translateWebSource(sourceLocale, error.description),
+        );
+      }
       return;
     }
     if (
@@ -1491,25 +1624,37 @@ function ScheduledTaskEditorForm({
         (!schedule.signature.secret &&
           !(liveTask?.schedule.type === "webhook" && liveTask.webhook?.hasSecret)))
     ) {
-      reportFailure("Signing secret is required", "Enter the signature header and secret.");
+      reportFailure(
+        "Signing secret is required",
+        translateWebExtraSource(sourceLocale, "Enter the signature header and secret."),
+      );
       return;
     }
     if (
       schedule.type === "interval" &&
       (!Number.isSafeInteger(schedule.everyMs) || schedule.everyMs < MIN_SCHEDULED_TASK_INTERVAL_MS)
     ) {
-      reportFailure("Invalid interval", "Enter an interval of at least one minute.");
+      reportFailure(
+        "Invalid interval",
+        translateWebExtraSource(sourceLocale, "Enter an interval of at least one minute."),
+      );
       return;
     }
     if (schedule.type === "once" && !offersOnce) {
       reportFailure(
-        "Once is not available here",
-        "This environment runs an older T3 Code. Update it to schedule a one-time task, or pick another schedule.",
+        translateWebSource(sourceLocale, "Once is not available here"),
+        translateWebSource(
+          sourceLocale,
+          "This environment runs an older T3 Code. Update it to schedule a one-time task, or pick another schedule.",
+        ),
       );
       return;
     }
     if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
-      reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
+      reportFailure(
+        "Checkout path is required",
+        translateWebExtraSource(sourceLocale, "Enter the path of the checkout to run in."),
+      );
       return;
     }
     const modelSelection =
@@ -1564,10 +1709,14 @@ function ScheduledTaskEditorForm({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{draft.editingId ? "Edit task" : "New task"}</DialogTitle>
+        <DialogTitle>
+          {translateWebExtraSource(sourceLocale, draft.editingId ? "Edit task" : "New task")}
+        </DialogTitle>
         <DialogDescription>
-          Run a prompt automatically on an interval, at a fixed time, once at a set date, or when a
-          webhook is called.
+          {translateWebSource(
+            sourceLocale,
+            "Run a prompt automatically on an interval, at a fixed time, once at a set date, or when a webhook is called.",
+          )}
         </DialogDescription>
       </DialogHeader>
 
@@ -1575,9 +1724,14 @@ function ScheduledTaskEditorForm({
         {/* Fieldsets default to min-width: min-content, which lets one wide control widen the form past the dialog. */}
         <fieldset disabled={saving} className="min-w-0 space-y-5">
           {!connected ? (
-            <p className="text-sm text-destructive">Reconnect this environment before saving.</p>
+            <p className="text-sm text-destructive">
+              {translateWebSource(sourceLocale, "Reconnect this environment before saving.")}
+            </p>
           ) : null}
-          <Field label="Runs on" htmlFor="scheduled-task-environment">
+          <Field
+            label={translateWebSource(sourceLocale, "Runs on")}
+            htmlFor="scheduled-task-environment"
+          >
             <Select
               value={environmentId}
               disabled={task !== null || saving}
@@ -1646,13 +1800,13 @@ function ScheduledTaskEditorForm({
           ) : null}
           {editingTaskMissing ? (
             <p className="text-xs text-destructive" role="status">
-              This scheduled task no longer exists.
+              {translateWebSource(sourceLocale, "This scheduled task no longer exists.")}
             </p>
           ) : null}
-          <Field label="Name" htmlFor="scheduled-task-title">
+          <Field label={translateWebSource(sourceLocale, "Name")} htmlFor="scheduled-task-title">
             <Input
               id="scheduled-task-title"
-              placeholder="e.g. Check for Sentry issues"
+              placeholder={translateWebSource(sourceLocale, "e.g. Check for Sentry issues")}
               value={draft.title}
               onChange={(event) =>
                 setDraft((current) => ({ ...current, title: event.target.value }))
@@ -1685,7 +1839,10 @@ function ScheduledTaskEditorForm({
           />
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Project" htmlFor="scheduled-task-project">
+            <Field
+              label={translateWebSource(sourceLocale, "Project")}
+              htmlFor="scheduled-task-project"
+            >
               <Select
                 value={selectedProjectId}
                 onValueChange={(projectId) =>
@@ -1693,7 +1850,9 @@ function ScheduledTaskEditorForm({
                 }
               >
                 <SelectTrigger size="sm" id="scheduled-task-project">
-                  <SelectValue placeholder="Select a project">{selectedProject?.title}</SelectValue>
+                  <SelectValue placeholder={translateWebSource(sourceLocale, "Select a project")}>
+                    {selectedProject?.title}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
                   {projects.map((project) => (
@@ -1715,7 +1874,10 @@ function ScheduledTaskEditorForm({
               </Select>
             </Field>
 
-            <Field label="Workspace" htmlFor="scheduled-task-workspace">
+            <Field
+              label={translateWebSource(sourceLocale, "Workspace")}
+              htmlFor="scheduled-task-workspace"
+            >
               <Select
                 value={draft.workspaceMode}
                 onValueChange={(value) =>
@@ -1726,16 +1888,25 @@ function ScheduledTaskEditorForm({
                   <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
-                  <SelectItem value="worktree">Create a new worktree</SelectItem>
-                  <SelectItem value="root">Use the project checkout</SelectItem>
-                  <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
+                  <SelectItem value="worktree">
+                    {translateWebSource(sourceLocale, "Create a new worktree")}
+                  </SelectItem>
+                  <SelectItem value="root">
+                    {translateWebSource(sourceLocale, "Use the project checkout")}
+                  </SelectItem>
+                  <SelectItem value="existing_worktree">
+                    {translateWebSource(sourceLocale, "Use a specific checkout")}
+                  </SelectItem>
                 </SelectPopup>
               </Select>
             </Field>
           </div>
 
           {draft.workspaceMode === "worktree" ? (
-            <Field label="Base branch" htmlFor="scheduled-task-base-ref">
+            <Field
+              label={translateWebSource(sourceLocale, "Base branch")}
+              htmlFor="scheduled-task-base-ref"
+            >
               <WorktreeBaseBranchPicker
                 key={`${environmentId}:${selectedProjectId}`}
                 id="scheduled-task-base-ref"
@@ -1752,11 +1923,14 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
           {draft.workspaceMode === "existing_worktree" ? (
-            <Field label="Checkout path" htmlFor="scheduled-task-checkout">
+            <Field
+              label={translateWebSource(sourceLocale, "Checkout path")}
+              htmlFor="scheduled-task-checkout"
+            >
               <Input
                 id="scheduled-task-checkout"
                 value={draft.existingWorktreePath}
-                placeholder="/path/to/checkout"
+                placeholder={translateWebSource(sourceLocale, "/path/to/checkout")}
                 onChange={(event) =>
                   setDraft((current) => ({
                     ...current,
@@ -1770,11 +1944,14 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
-          <Field label="Prompt" htmlFor="scheduled-task-prompt">
+          <Field label={translateWebSource(sourceLocale, "Prompt")} htmlFor="scheduled-task-prompt">
             <Textarea
               id="scheduled-task-prompt"
               className="max-h-64 overflow-y-auto"
-              placeholder="What should the agent do each time this runs?"
+              placeholder={translateWebSource(
+                sourceLocale,
+                "What should the agent do each time this runs?",
+              )}
               value={draft.prompt}
               onChange={(event) =>
                 setDraft((current) => ({ ...current, prompt: event.target.value }))
@@ -1782,7 +1959,7 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
-          <Field label="Model">
+          <Field label={translateWebSource(sourceLocale, "Model")}>
             <div>
               <ProviderModelPicker
                 environmentId={environmentId}
@@ -1805,15 +1982,17 @@ function ScheduledTaskEditorForm({
             {task?.schedule.type === "interval" &&
             task.schedule.everyMs < MIN_SCHEDULED_TASK_INTERVAL_MS ? (
               <p className="text-sm text-muted-foreground" role="status">
-                This task uses a legacy interval below one minute. Saving updates it to at least one
-                minute.
+                {translateWebSource(
+                  sourceLocale,
+                  "This task uses a legacy interval below one minute. Saving updates it to at least one minute.",
+                )}
               </p>
             ) : null}
             {/* Wraps the toggle below the label when both don't fit, as on phones. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <Label>Schedule</Label>
+              <Label>{translateWebSource(sourceLocale, "Schedule")}</Label>
               <ToggleGroup
-                aria-label="Schedule type"
+                aria-label={translateWebSource(sourceLocale, "Schedule type")}
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
                   const mode = values[0] as ScheduleMode | undefined;
@@ -1846,16 +2025,18 @@ function ScheduledTaskEditorForm({
                     });
                 }}
               >
-                <Toggle value="fixed">At a time</Toggle>
+                <Toggle value="fixed">{translateWebSource(sourceLocale, "At a time")}</Toggle>
                 {offersOnce || draft.scheduleMode === "once" ? (
-                  <Toggle value="once">Once</Toggle>
+                  <Toggle value="once">{translateWebSource(sourceLocale, "Once")}</Toggle>
                 ) : null}
-                <Toggle value="interval">Every interval</Toggle>
+                <Toggle value="interval">
+                  {translateWebSource(sourceLocale, "Every interval")}
+                </Toggle>
                 <Toggle
                   value="webhook"
                   disabled={webhookDenial !== undefined && draft.scheduleMode !== "webhook"}
                 >
-                  On webhook
+                  {translateWebSource(sourceLocale, "On webhook")}
                 </Toggle>
               </ToggleGroup>
             </div>
@@ -1863,7 +2044,10 @@ function ScheduledTaskEditorForm({
             {webhookDenial !== undefined ? (
               <ManagedNotice>
                 {draft.scheduleMode === "webhook"
-                  ? `${webhookDenial} Switch this task to a time or an interval, or turn it off, to save it.`
+                  ? `${webhookDenial} ${translateWebSource(
+                      sourceLocale,
+                      "Switch this task to a time or an interval, or turn it off, to save it.",
+                    )}`
                   : webhookDenial}
               </ManagedNotice>
             ) : null}
@@ -1874,13 +2058,14 @@ function ScheduledTaskEditorForm({
               <div className="space-y-4">
                 <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                 <p className="text-xs text-muted-foreground">
-                  {
-                    "Each request runs the prompt. Use {{body.path}}, {{headers.name}}, {{query.name}}, {{body}} or {{request}} in the prompt; only what it names reaches the agent."
-                  }
+                  {translateWebSource(
+                    sourceLocale,
+                    "Each request runs the prompt. Use {{body.path}}, {{headers.name}}, {{query.name}}, {{body}} or {{request}} in the prompt; only what it names reaches the agent.",
+                  )}
                 </p>
                 <Field
-                  label="Skip requests older than"
-                  hint="minutes, optional"
+                  label={translateWebSource(sourceLocale, "Skip requests older than")}
+                  hint={translateWebSource(sourceLocale, "minutes, optional")}
                   htmlFor="scheduled-task-max-age"
                 >
                   <Input
@@ -1889,7 +2074,7 @@ function ScheduledTaskEditorForm({
                     nativeInput
                     min={1}
                     max={MAX_WEBHOOK_DELIVERY_AGE_MINUTES}
-                    placeholder="Run every request"
+                    placeholder={translateWebSource(sourceLocale, "Run every request")}
                     value={draft.maxDeliveryAgeMinutes}
                     onChange={(event) =>
                       setDraft((current) => ({
@@ -1904,8 +2089,8 @@ function ScheduledTaskEditorForm({
                   onChange={(filters) => setDraft((current) => ({ ...current, filters }))}
                 />
                 <Field
-                  label="Duplicate request key"
-                  hint="template, optional"
+                  label={translateWebSource(sourceLocale, "Duplicate request key")}
+                  hint={translateWebSource(sourceLocale, "template, optional")}
                   htmlFor="scheduled-task-replay-key"
                 >
                   <Input
@@ -1918,11 +2103,14 @@ function ScheduledTaskEditorForm({
                   />
                 </Field>
                 <p className="text-xs text-muted-foreground">
-                  Requests with the same key run only once within 7 days.
+                  {translateWebSource(
+                    sourceLocale,
+                    "Requests with the same key run only once within 7 days.",
+                  )}
                 </p>
                 <Field
-                  label="Coalesce key"
-                  hint="template, optional"
+                  label={translateWebSource(sourceLocale, "Coalesce key")}
+                  hint={translateWebSource(sourceLocale, "template, optional")}
                   htmlFor="scheduled-task-coalesce-key"
                 >
                   <Input
@@ -1935,8 +2123,8 @@ function ScheduledTaskEditorForm({
                   />
                 </Field>
                 <Field
-                  label="Coalesce window"
-                  hint="seconds, 10–3600"
+                  label={translateWebSource(sourceLocale, "Coalesce window")}
+                  hint={translateWebSource(sourceLocale, "seconds, 10–3600")}
                   htmlFor="scheduled-task-coalesce-window"
                 >
                   <Input
@@ -1956,14 +2144,21 @@ function ScheduledTaskEditorForm({
                   />
                 </Field>
                 <p className="text-xs text-muted-foreground">
-                  Coalescing runs the latest payload once when the window from the first delivery
-                  closes. Empty keys run normally.
+                  {translateWebSource(
+                    sourceLocale,
+                    "Coalescing runs the latest payload once when the window from the first delivery closes. Empty keys run normally.",
+                  )}
                 </p>
                 <div className="flex items-center justify-between gap-4">
                   <div className="min-w-0 space-y-1">
-                    <Label htmlFor="scheduled-task-signature">Require signature</Label>
+                    <Label htmlFor="scheduled-task-signature">
+                      {translateWebSource(sourceLocale, "Require signature")}
+                    </Label>
                     <p className="text-sm text-muted-foreground">
-                      Reject requests without a valid HMAC-SHA256 signature of the body.
+                      {translateWebSource(
+                        sourceLocale,
+                        "Reject requests without a valid HMAC-SHA256 signature of the body.",
+                      )}
                     </p>
                   </div>
                   <Switch
@@ -1976,7 +2171,10 @@ function ScheduledTaskEditorForm({
                 </div>
                 {draft.signatureEnabled ? (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Header" htmlFor="scheduled-task-signature-header">
+                    <Field
+                      label={translateWebSource(sourceLocale, "Header")}
+                      htmlFor="scheduled-task-signature-header"
+                    >
                       <Input
                         id="scheduled-task-signature-header"
                         value={draft.signatureHeader}
@@ -1988,11 +2186,14 @@ function ScheduledTaskEditorForm({
                         }
                       />
                     </Field>
-                    <Field label="Prefix" htmlFor="scheduled-task-signature-prefix">
+                    <Field
+                      label={translateWebSource(sourceLocale, "Prefix")}
+                      htmlFor="scheduled-task-signature-prefix"
+                    >
                       <Input
                         id="scheduled-task-signature-prefix"
                         value={draft.signaturePrefix}
-                        placeholder="None"
+                        placeholder={translateWebSource(sourceLocale, "None")}
                         onChange={(event) =>
                           setDraft((current) => ({
                             ...current,
@@ -2001,7 +2202,10 @@ function ScheduledTaskEditorForm({
                         }
                       />
                     </Field>
-                    <Field label="Encoding" htmlFor="scheduled-task-signature-encoding">
+                    <Field
+                      label={translateWebSource(sourceLocale, "Encoding")}
+                      htmlFor="scheduled-task-signature-encoding"
+                    >
                       <Select
                         value={draft.signatureEncoding}
                         onValueChange={(value) =>
@@ -2015,12 +2219,19 @@ function ScheduledTaskEditorForm({
                           <SelectValue>{draft.signatureEncoding}</SelectValue>
                         </SelectTrigger>
                         <SelectPopup>
-                          <SelectItem value="hex">hex</SelectItem>
-                          <SelectItem value="base64">base64</SelectItem>
+                          <SelectItem value="hex">
+                            {translateWebSource(sourceLocale, "hex")}
+                          </SelectItem>
+                          <SelectItem value="base64">
+                            {translateWebSource(sourceLocale, "base64")}
+                          </SelectItem>
                         </SelectPopup>
                       </Select>
                     </Field>
-                    <Field label="Secret" htmlFor="scheduled-task-signature-secret">
+                    <Field
+                      label={translateWebSource(sourceLocale, "Secret")}
+                      htmlFor="scheduled-task-signature-secret"
+                    >
                       <Input
                         id="scheduled-task-signature-secret"
                         type="password"
@@ -2028,8 +2239,8 @@ function ScheduledTaskEditorForm({
                         value={draft.signatureSecret}
                         placeholder={
                           liveTask?.schedule.type === "webhook" && liveTask.webhook?.hasSecret
-                            ? "Unchanged"
-                            : "Shared secret"
+                            ? translateWebExtraSource(sourceLocale, "Unchanged")
+                            : translateWebExtraSource(sourceLocale, "Shared secret")
                         }
                         onChange={(event) =>
                           setDraft((current) => ({
@@ -2044,7 +2255,9 @@ function ScheduledTaskEditorForm({
               </div>
             ) : draft.scheduleMode === "once" ? (
               <div className="flex items-center gap-2">
-                <Label htmlFor="scheduled-task-run-at">Run on</Label>
+                <Label htmlFor="scheduled-task-run-at">
+                  {translateWebSource(sourceLocale, "Run on")}
+                </Label>
                 <Input
                   type="datetime-local"
                   id="scheduled-task-run-at"
@@ -2059,7 +2272,9 @@ function ScheduledTaskEditorForm({
             ) : draft.scheduleMode === "fixed" ? (
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
-                  <Label htmlFor="scheduled-task-time">Run at</Label>
+                  <Label htmlFor="scheduled-task-time">
+                    {translateWebSource(sourceLocale, "Run at")}
+                  </Label>
                   <Input
                     type="time"
                     id="scheduled-task-time"
@@ -2070,13 +2285,15 @@ function ScheduledTaskEditorForm({
                       setDraft((current) => ({ ...current, timeOfDay: event.target.value }))
                     }
                   />
-                  <span className="text-xs text-muted-foreground">on</span>
+                  <span className="text-xs text-muted-foreground">
+                    {translateWebSource(sourceLocale, "on")}
+                  </span>
                 </div>
                 <ToggleGroup
                   multiple
                   variant="outline"
                   size="sm"
-                  aria-label="Days to run"
+                  aria-label={translateWebSource(sourceLocale, "Days to run")}
                   value={[...draft.weekdays].map(String)}
                   onValueChange={(values) => {
                     if (values.length === 0) return;
@@ -2095,7 +2312,9 @@ function ScheduledTaskEditorForm({
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <Label htmlFor="scheduled-task-interval">Run every</Label>
+                <Label htmlFor="scheduled-task-interval">
+                  {translateWebSource(sourceLocale, "Run every")}
+                </Label>
                 <Input
                   type="number"
                   id="scheduled-task-interval"
@@ -2108,16 +2327,20 @@ function ScheduledTaskEditorForm({
                     setDraft((current) => ({ ...current, intervalMinutes: event.target.value }))
                   }
                 />
-                <span className="text-xs text-muted-foreground">minutes</span>
+                <span className="text-xs text-muted-foreground">
+                  {translateWebSource(sourceLocale, "minutes")}
+                </span>
               </div>
             )}
           </div>
 
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 space-y-1">
-              <Label htmlFor="scheduled-task-enabled">Enabled</Label>
+              <Label htmlFor="scheduled-task-enabled">
+                {translateWebSource(sourceLocale, "Enabled")}
+              </Label>
               <p id="scheduled-task-enabled-description" className="text-sm text-muted-foreground">
-                Disabled tasks stay saved but do not run.
+                {translateWebSource(sourceLocale, "Disabled tasks stay saved but do not run.")}
               </p>
             </div>
             <Switch
@@ -2132,7 +2355,7 @@ function ScheduledTaskEditorForm({
 
       <DialogFooter>
         <DialogClose render={<Button variant="outline" size="sm" disabled={saving} />}>
-          Cancel
+          {translateWebSource(sourceLocale, "Cancel")}
         </DialogClose>
         <Button
           size="sm"
@@ -2146,7 +2369,7 @@ function ScheduledTaskEditorForm({
           }
           onClick={() => void submit()}
         >
-          {draft.editingId ? "Save task" : "Create task"}
+          {translateWebExtraSource(sourceLocale, draft.editingId ? "Save task" : "Create task")}
         </Button>
       </DialogFooter>
     </>

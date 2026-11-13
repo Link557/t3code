@@ -1,3 +1,5 @@
+import { useI18n } from "~/i18n/WebI18nContext";
+import { translateConnectAgentSource } from "~/i18n/connectAgentMessages";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -14,6 +16,7 @@ export function CommandBlock({
   readonly className?: string;
   readonly prominent?: boolean;
 }) {
+  const { locale } = useI18n();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     timeout: 1500,
     target: "command",
@@ -33,7 +36,7 @@ export function CommandBlock({
       <Button
         size="icon-xs"
         variant="ghost"
-        aria-label="Copy command"
+        aria-label={translateConnectAgentSource(locale, "Copy command")}
         onClick={() => copyToClipboard(command, undefined)}
       >
         {isCopied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}

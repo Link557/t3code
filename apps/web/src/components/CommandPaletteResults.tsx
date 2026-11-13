@@ -1,3 +1,4 @@
+import { useI18n } from "~/i18n/WebI18nContext";
 import { startPaletteThreadDrag } from "./CommandPalette.drag";
 import { useLegendListRef } from "~/hooks/useLegendListRef";
 import { type ResolvedKeybindingsConfig } from "@t3tools/contracts";
@@ -241,6 +242,7 @@ function CommandPaletteResultRow(props: {
   keybindings: ResolvedKeybindingsConfig;
   onExecuteItem: (item: CommandPaletteActionItem | CommandPaletteSubmenuItem) => void;
 }) {
+  const { t } = useI18n();
   const shortcutLabel = props.item.shortcutCommand
     ? shortcutLabelForCommand(props.keybindings, props.item.shortcutCommand)
     : null;
@@ -256,7 +258,9 @@ function CommandPaletteResultRow(props: {
             event.nativeEvent,
             props.item.threadRef,
             props.item.searchTitle ??
-              (typeof props.item.title === "string" ? props.item.title : "Thread"),
+              (typeof props.item.title === "string"
+                ? props.item.title
+                : t("sidebar.threadFallback")),
           );
         }
       }}

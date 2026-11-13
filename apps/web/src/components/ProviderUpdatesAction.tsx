@@ -10,6 +10,8 @@ import { useEnvironmentProviders, useEnvironments } from "~/state/environments";
 import { serverEnvironment } from "~/state/server";
 import { useEnvironmentsWithScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useI18n } from "~/i18n/WebI18nContext";
+import { translateWebSource } from "~/i18n/messages";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -23,6 +25,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 // `refreshModels` always drops the server's hour-long latest-version cache. `modelCatalogOnly`
 // drops it only when the model manifest changed.
 export function useCheckProviderUpdates() {
+  const { locale } = useI18n();
   const { environments } = useEnvironments();
   const manageableIds = useEnvironmentsWithScope(environments, AuthProvidersManageScope);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
@@ -42,7 +45,9 @@ export function useCheckProviderUpdates() {
           const result = await refreshProviders({ environmentId, input: { refreshModels: true } });
           if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return [];
           const error = squashAtomCommandFailure(result);
-          return [`${label}: ${error instanceof Error ? error.message : "Refresh failed."}`];
+          return [
+            `${label}: ${error instanceof Error ? error.message : translateWebSource(locale, "Refresh failed.")}`,
+          ];
         }),
     );
     const lines = failures.flat();
@@ -50,7 +55,7 @@ export function useCheckProviderUpdates() {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "Could not check provider updates",
+        title: translateWebSource(locale, "Could not check provider updates"),
         description: <span className="whitespace-pre-line">{lines.join("\n")}</span>,
       }),
     );
@@ -68,6 +73,7 @@ export function useCheckProviderUpdates() {
 }
 
 export function useProviderUpdates() {
+  const { t } = useI18n();
   const { environments } = useEnvironments();
   const manageableIds = useEnvironmentsWithScope(environments, AuthProvidersManageScope);
   const providersByEnvironment = useEnvironmentProviders();
@@ -105,7 +111,7 @@ export function useProviderUpdates() {
         })),
       ),
     );
-    const view = quiet ? null : getProviderUpdateRunToastView(runs);
+    const view = quiet ? null : getProviderUpdateRunToastView(runs, t);
     if (view) {
       toastManager.add(
         stackedThreadToast({
@@ -121,6 +127,7 @@ export function useProviderUpdates() {
 }
 
 export function ProviderUpdatesAction() {
+  const { t } = useI18n();
   const { machines, updateAll } = useProviderUpdates();
   const pending = useRef(false);
   const [isPending, setIsPending] = useState(false);
@@ -147,7 +154,7 @@ export function ProviderUpdatesAction() {
             disabled={isPending}
             onClick={() => void handleUpdate()}
           >
-            {isPending ? "Updating…" : "Update all"}
+            {isPending ? t("providerUpdate.action.updating") : t("providerUpdate.action.updateAll")}
           </Button>
         }
       />

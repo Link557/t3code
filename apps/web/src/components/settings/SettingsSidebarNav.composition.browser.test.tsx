@@ -2,6 +2,8 @@ import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
+import { WebI18nContext } from "../../i18n/WebI18nContext";
+import { translateWebMessage } from "../../i18n/messages";
 import { SidebarProvider } from "../ui/sidebar";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
 
@@ -41,6 +43,36 @@ it("ignores composing keys in the search", async () => {
   await vi.waitFor(() =>
     expect(screen.router?.state.location.pathname).toBe("/settings/appearance"),
   );
+});
+
+it("updates section and group labels with the locale while retaining navigation targets", async () => {
+  const nav = (locale: "en" | "zh-CN") => (
+    <WebI18nContext
+      value={{
+        locale,
+        interfaceLanguage: locale,
+        setAppLocale: () => {},
+        t: (key, values) => translateWebMessage(locale, key, values),
+      }}
+    >
+      <SidebarProvider defaultOpen>
+        <SettingsSidebarNav pathname="/settings/general" />
+      </SidebarProvider>
+    </WebI18nContext>
+  );
+  await using screen = await render(nav("en"), { router: "/settings/general" });
+  await expect.element(screen.getByRole("group", { name: "Agents", exact: true })).toBeVisible();
+  await screen.rerender(nav("zh-CN"));
+  for (const name of ["智能体", "代码", "连接"]) {
+    await expect.element(screen.getByRole("group", { name, exact: true })).toBeVisible();
+  }
+  await userEvent.click(screen.getByRole("treeitem", { name: "语音", exact: true }));
+  await vi.waitFor(() => expect(screen.router?.state.location.pathname).toBe("/settings/voice"));
+  await screen.rerender(nav("en"));
+  await expect.element(screen.getByRole("treeitem", { name: "Voice", exact: true })).toBeVisible();
+  await expect
+    .element(screen.getByRole("group", { name: "Connections", exact: true }))
+    .toBeVisible();
 });
 
 it("opens search from the physical Slash and F keys on non-US layouts", async () => {

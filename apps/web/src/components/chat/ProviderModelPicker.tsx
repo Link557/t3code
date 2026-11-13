@@ -1,3 +1,4 @@
+import { useI18n } from "~/i18n/WebI18nContext";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -125,6 +126,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   effortColumn?: ReactNode;
   footer?: ReactNode;
 }) {
+  const { locale, t: controlsT } = useI18n();
   const composerFloatingLayerProps = useComposerMenuProps();
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -165,12 +167,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       ? undefined
       : selectedInstanceOptions[0]);
   const triggerTitle = selectedModel
-    ? getTriggerDisplayModelName(selectedModel, activeEntry?.driverKind)
+    ? getTriggerDisplayModelName(selectedModel, activeEntry?.driverKind, locale)
     : props.model === ANTIGRAVITY_DEFAULT_MODEL
-      ? "Choose model"
-      : props.model || "Choose model";
+      ? controlsT("chatControls.copy49")
+      : props.model || controlsT("chatControls.copy49");
   const triggerLabel = selectedModel
-    ? `${getDisplayModelName(selectedModel)}${selectedModel.isUnavailable ? " (Unavailable)" : ""}`
+    ? `${getDisplayModelName(selectedModel, { driverKind: activeEntry?.driverKind, locale })}${selectedModel.isUnavailable ? controlsT("chatControls.copy50") : ""}`
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
@@ -235,26 +237,31 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       model: selection.model,
       options: props.modelOptionsByInstance.get(selection.instanceId) ?? [],
     });
-    const unavailable = model?.isUnavailable ? " (Unavailable)" : "";
+    const unavailable = model?.isUnavailable ? controlsT("chatControls.copy50") : "";
     return {
       ...selection,
       entry,
       label: model
-        ? `${getTriggerDisplayModelName(model, entry?.driverKind)}${unavailable}`
+        ? `${getTriggerDisplayModelName(model, entry?.driverKind, locale)}${unavailable}`
         : selection.model,
-      fullLabel: model ? `${getDisplayModelName(model)}${unavailable}` : selection.model,
+      fullLabel: model
+        ? `${getDisplayModelName(model, { driverKind: entry?.driverKind, locale })}${unavailable}`
+        : selection.model,
     };
   });
   const multipleLabel = selectedEntries
     ? selectedEntries.length === 0
-      ? "Choose models"
+      ? controlsT("chatControls.copy51")
       : `${selectedEntries
           .slice(0, 2)
           .map((selection) => selection.label)
-          .join(", ")}${selectedEntries.length > 2 ? `, ${selectedEntries.length - 2} more` : ""}`
+          .join(
+            ", ",
+          )}${selectedEntries.length > 2 ? controlsT("chatControls.moreModels", { count: selectedEntries.length - 2 }) : ""}`
     : undefined;
   const allModelNames = selectedEntries
-    ? selectedEntries.map((selection) => selection.fullLabel).join(", ") || "Choose models"
+    ? selectedEntries.map((selection) => selection.fullLabel).join(", ") ||
+      controlsT("chatControls.copy51")
     : undefined;
   const triggerTooltipContent = [
     props.triggerLabel ?? allModelNames ?? triggerLabel,
@@ -298,7 +305,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       {...(props.onOpenProviderSetup ? { onOpenProviderSetup: props.onOpenProviderSetup } : {})}
       getModelDisabledReason={(instanceId, model) =>
         props.disabled
-          ? "Model picker is disabled"
+          ? controlsT("chatControls.copy52")
           : (props.getModelDisabledReason?.(instanceId, model) ?? null)
       }
       onInstanceModelChange={handleInstanceModelChange}
@@ -426,7 +433,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {props.triggerSuffix}
           {selectedModel?.isUnavailable && !selectedEntries && props.triggerLabel === undefined ? (
             <Badge variant="outline" size="sm">
-              Unavailable
+              {controlsT("chatControls.copy29")}
             </Badge>
           ) : null}
         </span>

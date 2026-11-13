@@ -1,3 +1,4 @@
+import { useI18n } from "~/i18n/WebI18nContext";
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 import { memo } from "react";
 import { CheckIcon, StarIcon } from "lucide-react";
@@ -15,6 +16,8 @@ export const ModelListRow = memo(function ModelListRow(props: {
   index: number;
   slug: string;
   name: string;
+  aliases?: ReadonlyArray<string> | undefined;
+  isDefault?: boolean | undefined;
   subProvider?: string | undefined;
   instanceId: ProviderInstanceId;
   driverKind: ProviderDriverKind;
@@ -34,9 +37,12 @@ export const ModelListRow = memo(function ModelListRow(props: {
   disabledReason?: string | null;
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
 }) {
+  const { locale, t: controlsT } = useI18n();
   const model = {
     slug: props.slug,
     name: props.name,
+    aliases: props.aliases,
+    isDefault: props.isDefault,
     subProvider: props.subProvider,
   };
 
@@ -72,10 +78,13 @@ export const ModelListRow = memo(function ModelListRow(props: {
           // Names the row in full on hover only when it is cut off.
           onPointerEnter={(event) => {
             const name = event.currentTarget;
-            name.title = name.scrollWidth > name.clientWidth ? getDisplayModelName(model) : "";
+            name.title =
+              name.scrollWidth > name.clientWidth
+                ? getDisplayModelName(model, { driverKind: props.driverKind, locale })
+                : "";
           }}
         >
-          {getDisplayModelName(model)}
+          {getDisplayModelName(model, { driverKind: props.driverKind, locale })}
           {/* The logo is decorative, so name the provider for screen readers. */}
           <span className="sr-only">, {props.providerDisplayName}</span>
         </div>
@@ -88,14 +97,14 @@ export const ModelListRow = memo(function ModelListRow(props: {
         {props.showNewBadge ? (
           <span
             className="shrink-0 rounded border border-update/35 bg-update/15 px-0.5 py-px text-3xs font-bold uppercase leading-none tracking-wide text-update-foreground"
-            aria-label="New model"
+            aria-label={controlsT("chatControls.copy27")}
           >
-            New
+            {controlsT("chatControls.copy28")}
           </span>
         ) : null}
         {props.unavailable ? (
           <Badge variant="outline" size="sm">
-            Unavailable
+            {controlsT("chatControls.copy29")}
           </Badge>
         ) : null}
       </div>
@@ -115,7 +124,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
                   event.stopPropagation();
                 }}
                 disabled={Boolean(props.disabledReason)}
-                aria-label={props.isFavorite ? "Remove from favorites" : "Add to favorites"}
+                aria-label={
+                  props.isFavorite
+                    ? controlsT("chatControls.copy30")
+                    : controlsT("chatControls.copy31")
+                }
               >
                 <StarIcon
                   className={cn(
@@ -129,7 +142,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
             }
           />
           <TooltipPopup side="top" align="center">
-            {props.isFavorite ? "Remove from favorites" : "Add to favorites"}
+            {props.isFavorite ? controlsT("chatControls.copy30") : controlsT("chatControls.copy31")}
           </TooltipPopup>
         </Tooltip>
         {props.jumpLabel ? <Kbd>{props.jumpLabel}</Kbd> : null}

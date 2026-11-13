@@ -1,3 +1,8 @@
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { managedRuntimeModeCeilingMessage } from "../../i18n/managedPolicyMessages";
+import { useI18n, splitWebTranslation, type WebTranslate } from "~/i18n/WebI18nContext";
+import { translateConnectAgentSource } from "~/i18n/connectAgentMessages";
+
 import {
   type AuthMcpApprovalDecision,
   type AuthMcpApprovalDetails,
@@ -5,7 +10,6 @@ import {
   AuthMcpClientAccess,
   AuthMcpAuthorizationRequest,
   isRuntimeModeAbove,
-  managedRuntimeModeCeilingMessage,
   parseMcpApprovalCode,
 } from "@t3tools/contracts";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
@@ -85,6 +89,7 @@ function runApproval<A>(
   call: (
     client: Context.Service.Shape<typeof PrimaryEnvironmentHttpClient>,
   ) => Effect.Effect<A | { readonly redirectTo: string }, unknown>,
+  translateSource: (source: string) => string,
 ): Promise<McpApprovalAnswer<A>> {
   return runPrimaryHttp(
     PrimaryEnvironmentHttpClient.pipe(
@@ -97,22 +102,29 @@ function runApproval<A>(
       Effect.catch((error) =>
         Effect.succeed<McpApprovalAnswer<A>>({
           kind: "error",
-          message: isApprovalError(error) ? error.message : UNREACHABLE,
+          message: isApprovalError(error) ? error.message : translateSource(UNREACHABLE),
         }),
       ),
     ),
-  ).catch((): McpApprovalAnswer<A> => ({ kind: "error", message: UNREACHABLE }));
+  ).catch((): McpApprovalAnswer<A> => ({
+    kind: "error",
+    message: translateSource(UNREACHABLE),
+  }));
 }
 
 /** This environment's own page, approving with a code or this browser's session. */
-const primaryTransport: McpApprovalTransport = {
+const primaryTransport = (translateSource: (source: string) => string): McpApprovalTransport => ({
   load: (authorization) =>
-    runApproval((client) => client.mcpOAuth.approval({ headers: {}, payload: authorization })),
-  decide: (authorization, decision) =>
-    runApproval((client) =>
-      client.mcpOAuth.decision({ headers: {}, payload: { authorization, decision } }),
+    runApproval(
+      (client) => client.mcpOAuth.approval({ headers: {}, payload: authorization }),
+      translateSource,
     ),
-};
+  decide: (authorization, decision) =>
+    runApproval(
+      (client) => client.mcpOAuth.decision({ headers: {}, payload: { authorization, decision } }),
+      translateSource,
+    ),
+});
 
 const decodeAuthorizationRequest = Schema.decodeSync(AuthMcpAuthorizationRequest);
 
@@ -122,8 +134,13 @@ export function readAuthorizationRequest(): AuthMcpAuthorizationRequest {
 }
 
 export function ConnectAgentSurface() {
+  const { locale } = useI18n();
+  const translateSource = useStableCallback((source: string) =>
+    translateConnectAgentSource(locale, source),
+  );
+  const [transport] = useState(() => primaryTransport(translateSource));
   const [authorization] = useState(readAuthorizationRequest);
-  return <McpConsent authorization={authorization} transport={primaryTransport} acceptsCode />;
+  return <McpConsent authorization={authorization} transport={transport} acceptsCode />;
 }
 
 /**
@@ -145,6 +162,8 @@ export function McpConsent({
   readonly environmentLabel?: string | undefined;
   readonly footer?: ReactNode;
 }) {
+  const { t, locale } = useI18n();
+  const tx = (source: string) => translateConnectAgentSource(locale, source);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [requestedAccess, setAccess] = useState<AuthMcpClientAccess | null>(null);
   const [pairingCode, setPairingCode] = useState("");
@@ -166,7 +185,11 @@ export function McpConsent({
     void transport.load(authorization).then((answer) => {
       if (cancelled) return;
       if (answer.kind === "redirect") {
-        if (!followRedirect(answer.url)) setLoaded({ status: "invalid", message: UNSAFE_REDIRECT });
+        if (!followRedirect(answer.url))
+          setLoaded({
+            status: "invalid",
+            message: translateConnectAgentSource(locale, UNSAFE_REDIRECT),
+          });
         return;
       }
       setLoaded(
@@ -178,7 +201,7 @@ export function McpConsent({
     return () => {
       cancelled = true;
     };
-  }, [authorization, transport]);
+  }, [authorization, transport, locale]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps Approve off briefly after the page shows or regains focus, so a click aimed at another window cannot land on it
   useEffect(() => {
@@ -215,8 +238,8 @@ export function McpConsent({
       answer.kind === "error"
         ? answer.message
         : answer.kind === "redirect"
-          ? UNSAFE_REDIRECT
-          : "The sign-in could not continue.",
+          ? tx(UNSAFE_REDIRECT)
+          : tx("The sign-in could not continue."),
     );
   };
 
@@ -224,8 +247,8 @@ export function McpConsent({
     return (
       <StandalonePage>
         <ConnectAgentHeading
-          title="Checking the sign-in request"
-          description="One moment while this environment verifies the agent's request."
+          title={tx("Checking the sign-in request")}
+          description={tx("One moment while this environment verifies the agent's request.")}
         />
         <Spinner className="mt-6" size="lg" tone="muted" />
       </StandalonePage>
@@ -235,9 +258,12 @@ export function McpConsent({
   if (loaded.status === "invalid") {
     return (
       <StandalonePage>
-        <ConnectAgentHeading title="This sign-in cannot continue" description={loaded.message} />
+        <ConnectAgentHeading
+          title={tx("This sign-in cannot continue")}
+          description={loaded.message}
+        />
         <p className="mt-4 text-sm text-muted-foreground">
-          Close this page and start the sign-in again from your agent.
+          {tx("Close this page and start the sign-in again from your agent.")}
         </p>
         {footer}
       </StandalonePage>
@@ -245,6 +271,12 @@ export function McpConsent({
   }
 
   const { details } = loaded;
+  const [beforeCommand, afterCommand] = translateConnectAgentSource(
+    locale,
+    "Get one from Use T3 Code in another app (MCP), Settings → Sharing & access, or {command} on this machine.",
+    { command: "\u0000" },
+  ).split("\u0000");
+  const [beforeHost, afterHost] = splitWebTranslation(t, "connectAgent.requestDescription", "host");
   const canApprove =
     armed &&
     pending === null &&
@@ -257,39 +289,43 @@ export function McpConsent({
   return (
     <StandalonePage>
       <ConnectAgentHeading
-        title={`Connect ${details.clientName}`}
+        title={t("connectAgent.title", { client: details.clientName })}
         description={
           <>
-            This agent wants to use the threads in every project on{" "}
+            {beforeHost}
             <span className="font-medium text-foreground">
               {environmentLabel ?? details.environmentHost}
             </span>
-            {environmentLabel ? ` (${details.environmentHost})` : null}.
+            {environmentLabel ? ` (${details.environmentHost})` : null}
+            {afterHost}
           </>
         }
       />
       <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">App</dt>
+        <dt className="text-muted-foreground">{tx("App")}</dt>
         <dd className="min-w-0 break-words">
-          {details.clientName} <span className="text-muted-foreground">· name set by the app</span>
+          {details.clientName}{" "}
+          <span className="text-muted-foreground">· {tx("name set by the app")}</span>
         </dd>
-        <dt className="text-muted-foreground">Access goes to</dt>
+        <dt className="text-muted-foreground">{tx("Access goes to")}</dt>
         <dd className="min-w-0 break-words font-medium">
           {details.redirectHost}
           {redirectsToThisComputer(details.redirectHost) ? (
             <span className="font-normal text-muted-foreground">
               {" "}
-              on the computer that opened this page
+              {tx("on the computer that opened this page")}
             </span>
           ) : (
             <span className="font-normal text-muted-foreground">
               {" "}
-              · whoever runs it gets this access
+              · {tx("whoever runs it gets this access")}
             </span>
           )}
         </dd>
       </dl>
-      <p className="mt-2 text-xs text-muted-foreground">Only approve a sign-in you just started.</p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {tx("Only approve a sign-in you just started.")}
+      </p>
 
       <form
         className="mt-6 space-y-5"
@@ -301,7 +337,7 @@ export function McpConsent({
         {acceptsCode ? (
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="connect-agent-pairing-code">
-              Sign-in code
+              {tx("Sign-in code")}
             </label>
             <Input
               id="connect-agent-pairing-code"
@@ -311,26 +347,27 @@ export function McpConsent({
               disabled={pending !== null}
               nativeInput
               onChange={(event) => setPairingCode(event.currentTarget.value)}
-              placeholder="Paste a code"
+              placeholder={tx("Paste a code")}
               spellCheck={false}
               value={pairingCode}
             />
             <p className="text-xs text-muted-foreground">
-              Get one from Use T3 Code in another app (MCP), Settings → Sharing & access, or{" "}
-              <code>t3 auth pairing create</code> on this machine.
+              {beforeCommand}
+              <code>t3 auth pairing create</code>
+              {afterCommand}
             </p>
           </div>
         ) : null}
 
         {codeAccess ? (
           <p className="text-sm">
-            <span className="text-muted-foreground">Access</span>{" "}
-            <span className="font-medium">{accessConfig[codeAccess].label}</span>
+            <span className="text-muted-foreground">{tx("Access")}</span>{" "}
+            <span className="font-medium">{tx(accessConfig[codeAccess].label)}</span>
           </p>
         ) : (
           <div className="space-y-2">
             <span id="connect-agent-access-label" className="text-sm font-medium">
-              What it may do
+              {tx("What it may do")}
             </span>
             <RadioGroup
               aria-labelledby="connect-agent-access-label"
@@ -342,13 +379,14 @@ export function McpConsent({
                   key={option}
                   access={option}
                   selected={option === access}
-                  disabledReason={ceilingReason(details, option)}
+                  disabledReason={ceilingReason(details, option, t)}
                 />
               ))}
             </RadioGroup>
             <p className="text-xs text-muted-foreground">
-              Beyond read only, it can start, message and stop threads, and none of them can run
-              with more than the mode you pick.
+              {tx(
+                "Beyond read only, it can start, message and stop threads, and none of them can run with more than the mode you pick.",
+              )}
             </p>
           </div>
         )}
@@ -362,10 +400,10 @@ export function McpConsent({
         <div className="flex flex-wrap gap-2">
           <Button disabled={!canApprove} type="submit">
             {pending === "approve"
-              ? "Approving…"
+              ? tx("Approving…")
               : approveLevel === null
-                ? "Choose what it may do"
-                : `Approve ${accessConfig[approveLevel].label}`}
+                ? tx("Choose what it may do")
+                : `${tx("Approve")} ${tx(accessConfig[approveLevel].label)}`}
           </Button>
           <Button
             disabled={pending !== null}
@@ -373,7 +411,7 @@ export function McpConsent({
             type="button"
             variant="outline"
           >
-            {pending === "deny" ? "Denying…" : "Deny"}
+            {pending === "deny" ? tx("Denying…") : tx("Deny")}
           </Button>
         </div>
       </form>
@@ -389,17 +427,25 @@ function ConnectAgentHeading({
   readonly title: string;
   readonly description: ReactNode;
 }) {
-  return <StandalonePageHeader context="Agent sign-in" title={title} description={description} />;
+  const { locale } = useI18n();
+  const tx = (source: string) => translateConnectAgentSource(locale, source);
+  return (
+    <StandalonePageHeader context={tx("Agent sign-in")} title={title} description={description} />
+  );
 }
 
 /** Why a managed policy keeps `access` from being granted, or undefined when it may be. */
-function ceilingReason(details: AuthMcpApprovalDetails, access: AuthMcpClientAccess) {
+function ceilingReason(
+  details: AuthMcpApprovalDetails,
+  access: AuthMcpClientAccess,
+  t: WebTranslate,
+) {
   const ceiling = details.runtimeModeCeiling;
   return ceiling === undefined ||
     access === "read-only" ||
     !isRuntimeModeAbove(access, ceiling.maxRuntimeMode)
     ? undefined
-    : managedRuntimeModeCeilingMessage(ceiling.organization, ceiling.maxRuntimeMode);
+    : managedRuntimeModeCeilingMessage(ceiling.organization, ceiling.maxRuntimeMode, t);
 }
 
 /** One access level in a radio group; `description` replaces the level's own, null hides it. */
@@ -414,6 +460,8 @@ export function AccessOption({
   readonly disabledReason: string | undefined;
   readonly description?: string | null;
 }) {
+  const { locale } = useI18n();
+  const tx = (source: string) => translateConnectAgentSource(locale, source);
   const { label, icon: Icon } = accessConfig[access];
   const detail =
     disabledReason ?? (description === undefined ? accessConfig[access].description : description);
@@ -437,9 +485,9 @@ export function AccessOption({
         )}
       />
       <span className="min-w-0">
-        <span className="block text-sm font-medium text-foreground">{label}</span>
+        <span className="block text-sm font-medium text-foreground">{tx(label)}</span>
         {detail === null ? null : (
-          <span className="block text-xs text-muted-foreground">{detail}</span>
+          <span className="block text-xs text-muted-foreground">{tx(detail)}</span>
         )}
       </span>
     </RadioPrimitive.Root>

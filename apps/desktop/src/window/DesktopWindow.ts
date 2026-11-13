@@ -21,6 +21,7 @@ import { getDesktopUrl } from "../electron/ElectronProtocol.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopTray from "./DesktopTray.ts";
 import {
   MENU_ACTION_CHANNEL,
   QUIT_SHORTCUT_CHANNEL,
@@ -34,10 +35,13 @@ import * as PreviewManager from "../preview/Manager.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
+import { readDesktopLocale } from "../settings/DesktopLocale.ts";
+import type { ResolvedAppLocale } from "@t3tools/shared/appLocale";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import { resolveDesktopApplicationMenuMessages } from "./DesktopApplicationMenuMessages.ts";
 
 const TITLEBAR_HEIGHT = 40;
 
@@ -105,6 +109,7 @@ type DesktopWindowRuntimeServices =
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow
+  | DesktopTray.DesktopTray
   | DesktopRendererHistory.DesktopRendererHistory
   | PreviewManager.PreviewManager;
 
@@ -204,12 +209,16 @@ export function resolveInitialMainWindowBounds(
   return DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE;
 }
 
-function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
+function buildConnectingSplashDataUrl(
+  shouldUseDarkColors: boolean,
+  locale: ResolvedAppLocale,
+): string {
+  const messages = resolveDesktopApplicationMenuMessages(locale, []);
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
   const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
   const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
+  const html = `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">${messages.connectingToWsl}</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
@@ -329,6 +338,7 @@ export const make = Effect.gen(function* () {
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const desktopTray = yield* DesktopTray.DesktopTray;
   const previewManager = yield* PreviewManager.PreviewManager;
   const previewPasskeys = yield* PreviewPasskeys.PreviewPasskeys;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -348,6 +358,7 @@ export const make = Effect.gen(function* () {
     Effect.suspend(() => pendingMainReveals.get(window) ?? electronWindow.reveal(window)),
   );
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+  let revealMainFromTray: Effect.Effect<void, DesktopWindowError> = Effect.void;
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -572,79 +583,91 @@ export const make = Effect.gen(function* () {
       contextMenuContents.add(contents);
       contents.on("context-menu", (event, params) => {
         event.preventDefault();
-        if (contents.isDestroyed() || ownerWindow.isDestroyed()) return;
-        // Right-clicking a guest may leave native editing roles targeting the host renderer.
-        contents.focus();
-
-        const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
-
-        if (params.misspelledWord) {
-          for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
-            menuTemplate.push({
-              label: suggestion,
-              click: () => {
-                if (!contents.isDestroyed()) contents.replaceMisspelling(suggestion);
-              },
-            });
-          }
-          if (params.dictionarySuggestions.length === 0) {
-            menuTemplate.push({ label: "No suggestions", enabled: false });
-          }
-          menuTemplate.push({ type: "separator" });
-        }
-
-        if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
-          menuTemplate.push(
-            {
-              label: "Copy Link",
-              click: () => {
-                void runPromise(electronShell.copyText(params.linkURL));
-              },
-            },
-            { type: "separator" },
-          );
-        }
-
-        const mailtoAddress = parseMailtoAddress(params.linkURL);
-        if (Option.isSome(mailtoAddress)) {
-          menuTemplate.push(
-            {
-              label: "Copy Email Address",
-              click: () => {
-                void runPromise(electronShell.copyText(mailtoAddress.value));
-              },
-            },
-            { type: "separator" },
-          );
-        }
-
-        if (params.mediaType === "image") {
-          menuTemplate.push({
-            label: "Copy Image",
-            click: () => {
-              void runPromise(
-                Effect.tryPromise({
-                  try: () => copyContextMenuImage(contents, params),
-                  catch: (cause) => new ContextMenuImageCopyError({ cause }),
-                }).pipe(Effect.catch(() => logWindowWarning("failed to copy context-menu image"))),
-              );
-            },
-          });
-          menuTemplate.push({ type: "separator" });
-        }
-
-        menuTemplate.push(
-          { role: "cut", enabled: params.editFlags.canCut },
-          { role: "copy", enabled: params.editFlags.canCopy },
-          { role: "paste", enabled: params.editFlags.canPaste },
-          { role: "selectAll", enabled: params.editFlags.canSelectAll },
-        );
-
         void runPromise(
-          electronMenu.popupTemplate({
-            window: ownerWindow,
-            template: menuTemplate,
-            ...(params.frame ? { frame: params.frame } : {}),
+          Effect.gen(function* () {
+            const messages = resolveDesktopApplicationMenuMessages(
+              yield* readDesktopLocale(clientSettings.get, electronApp.systemLocale),
+              [],
+            );
+            if (contents.isDestroyed() || ownerWindow.isDestroyed()) return;
+            // Right-clicking a guest may leave native editing roles targeting the host renderer.
+            contents.focus();
+
+            const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+
+            if (params.misspelledWord) {
+              for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+                menuTemplate.push({
+                  label: suggestion,
+                  click: () => {
+                    if (!contents.isDestroyed()) contents.replaceMisspelling(suggestion);
+                  },
+                });
+              }
+              if (params.dictionarySuggestions.length === 0) {
+                menuTemplate.push({ label: messages.noSpellingSuggestions, enabled: false });
+              }
+              menuTemplate.push({ type: "separator" });
+            }
+
+            if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
+              menuTemplate.push(
+                {
+                  label: messages.copyLink,
+                  click: () => {
+                    void runPromise(electronShell.copyText(params.linkURL));
+                  },
+                },
+                { type: "separator" },
+              );
+            }
+
+            const mailtoAddress = parseMailtoAddress(params.linkURL);
+            if (Option.isSome(mailtoAddress)) {
+              menuTemplate.push(
+                {
+                  label: messages.copyEmailAddress,
+                  click: () => {
+                    void runPromise(electronShell.copyText(mailtoAddress.value));
+                  },
+                },
+                { type: "separator" },
+              );
+            }
+
+            if (params.mediaType === "image") {
+              menuTemplate.push({
+                label: messages.copyImage,
+                click: () => {
+                  void runPromise(
+                    Effect.tryPromise({
+                      try: () => copyContextMenuImage(contents, params),
+                      catch: (cause) => new ContextMenuImageCopyError({ cause }),
+                    }).pipe(
+                      Effect.catch(() => logWindowWarning("failed to copy context-menu image")),
+                    ),
+                  );
+                },
+              });
+              menuTemplate.push({ type: "separator" });
+            }
+
+            menuTemplate.push(
+              { role: "cut", label: messages.cut, enabled: params.editFlags.canCut },
+              { role: "copy", label: messages.copy, enabled: params.editFlags.canCopy },
+              { role: "paste", label: messages.paste, enabled: params.editFlags.canPaste },
+              {
+                role: "selectAll",
+                label: messages.selectAll,
+                enabled: params.editFlags.canSelectAll,
+              },
+            );
+
+            yield* electronMenu.popupTemplate({
+              window: ownerWindow,
+              template: menuTemplate,
+              ...(params.frame ? { frame: params.frame } : {}),
+            });
           }),
         );
       });
@@ -742,8 +765,21 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    yield* desktopTray.ensure({
+      open: () => {
+        void runPromise(revealMainFromTray);
+      },
+      quit: () => {
+        void runPromise(electronApp.quit);
+      },
+    });
+
+    window.on("close", (event) => {
       runFork(flushBoundsPersist);
+      if (desktopTray.shouldHideOnClose()) {
+        event.preventDefault();
+        window.hide();
+      }
     });
 
     if (environment.platform === "darwin") {
@@ -953,6 +989,7 @@ export const make = Effect.gen(function* () {
     yield* revealMain(window);
     return window;
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
+  revealMainFromTray = revealOrCreateMain.pipe(Effect.asVoid);
 
   const waitingForBackend = Effect.gen(function* () {
     if (yield* Ref.get(backendReadyRef)) return false;
@@ -1007,7 +1044,12 @@ export const make = Effect.gen(function* () {
         splash.show();
       }
     });
-    void splash.loadURL(buildConnectingSplashDataUrl(shouldUseDarkColors));
+    void splash.loadURL(
+      buildConnectingSplashDataUrl(
+        shouldUseDarkColors,
+        yield* readDesktopLocale(clientSettings.get, electronApp.systemLocale),
+      ),
+    );
     yield* logWindowInfo("connecting splash shown");
   }).pipe(
     Effect.catch((error) =>

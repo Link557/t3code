@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -49,6 +50,7 @@ import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts"
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as DesktopTray from "../window/DesktopTray.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 
 import * as BrowserImport from "../preview/BrowserImport/BrowserImport.ts";
@@ -225,6 +227,14 @@ it.effect.each([false, true])(
             Layer.mock(DesktopSshEnvironment.DesktopSshEnvironment, {}),
             Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts, {}),
             Layer.mock(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {}),
+            Layer.mock(DesktopTray.DesktopTray, {
+              markQuitRequested: () => {
+                throw new Error("unexpected tray quit request");
+              },
+              shouldHideOnClose: () => {
+                throw new Error("unexpected tray close policy lookup");
+              },
+            }),
             Layer.mock(DesktopWebLinks.DesktopWebLinks, {}),
             Layer.mock(DesktopWslEnvironment.DesktopWslEnvironment, {}),
             Layer.mock(ElectronMenu.ElectronMenu, {}),
@@ -267,4 +277,80 @@ it.effect.each([false, true])(
       assert.isTrue(yield* shutdown.isComplete);
       assert.isTrue(yield* Deferred.isDone(registrationStopped));
     }).pipe(Effect.provide(DesktopShutdown.layer)),
+);
+
+it.effect.each([
+  { interfaceLanguage: "zh-CN", source: "saved", osLocale: "en-US", chinese: true },
+  { interfaceLanguage: "en", source: "saved", osLocale: "zh-CN", chinese: false },
+  { interfaceLanguage: "en", source: "absent", osLocale: "unavailable", chinese: false },
+  { interfaceLanguage: "en", source: "absent", osLocale: "zh-CN", chinese: false },
+  { interfaceLanguage: "en", source: "failed", osLocale: "zh-CN", chinese: false },
+  { interfaceLanguage: "en", source: "defect", osLocale: "zh-CN", chinese: false },
+] as const)(
+  "reports fatal startup failures safely with $source settings and $osLocale",
+  ({ interfaceLanguage, source, osLocale, chinese }) =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const boxes: Array<{ title: string; content: string }> = [];
+      const error = new Error("ENOENT /tmp/t3/state.json");
+      error.stack = "Error: ENOENT /tmp/t3/state.json\n    at bootstrap (main.cjs:1:2)";
+      const run = Effect.gen(function* () {
+        yield* DesktopApp.handleFatalStartupError("bootstrap", error);
+        yield* DesktopApp.handleFatalStartupError("whenReady", error);
+        assert.equal(boxes.length, 1);
+        assert.equal(boxes[0]?.title, chinese ? "T3 Code 启动失败" : "T3 Code failed to start");
+        assert.equal(
+          boxes[0]?.content,
+          `${chinese ? "阶段：" : "Stage: "}bootstrap\n${error.message}\n${error.stack}`,
+        );
+        assert.deepEqual(events, ["dialog", "shutdown", "quit", "shutdown", "quit"]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            DesktopState.layer,
+            Layer.mock(DesktopShutdown.DesktopShutdown)({
+              request: Effect.sync(() => {
+                events.push("shutdown");
+              }),
+            }),
+            Layer.mock(ElectronApp.ElectronApp)({
+              systemLocale:
+                osLocale === "unavailable"
+                  ? Effect.die("OS locale unavailable")
+                  : Effect.succeed(osLocale),
+              quit: Effect.sync(() => {
+                events.push("quit");
+              }),
+            }),
+            Layer.mock(ElectronDialog.ElectronDialog)({
+              showErrorBox: (title, content) =>
+                Effect.sync(() => {
+                  boxes.push({ title, content });
+                  events.push("dialog");
+                }),
+            }),
+          ),
+        ),
+      );
+      if (source === "absent") yield* run;
+      else
+        yield* run.pipe(
+          Effect.provide(
+            Layer.mock(DesktopClientSettings.DesktopClientSettings)({
+              get:
+                source === "failed"
+                  ? Effect.fail(
+                      new DesktopClientSettings.DesktopClientSettingsReadError({
+                        operation: "read-file",
+                        path: "/tmp/client-settings.json",
+                        cause: "unavailable",
+                      }),
+                    )
+                  : source === "defect"
+                    ? Effect.die("settings unavailable")
+                    : Effect.succeedSome({ ...DEFAULT_CLIENT_SETTINGS, interfaceLanguage }),
+            }),
+          ),
+        );
+    }),
 );

@@ -1,3 +1,4 @@
+import { useI18n } from "../../i18n/WebI18nContext";
 import {
   type ProviderInstanceId,
   textGeneratorForSelection,
@@ -18,6 +19,7 @@ export function useScopedModelDisabledReason(
   settings: UnifiedSettings,
   entries: readonly ProviderInstanceEntry[],
 ) {
+  const { locale } = useI18n();
   const { targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
@@ -28,7 +30,10 @@ export function useScopedModelDisabledReason(
       const environment = environments.find(
         (entry) => entry.environmentId === candidate.environmentId,
       );
-      const unavailable = `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
+      const unavailable =
+        locale === "zh-CN"
+          ? `此模型在${environment?.label ?? "某个所选环境"}上不可用。请选择该环境，为其单独选择模型。`
+          : `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
       const generator = textGeneratorForSelection(candidate.settings, instanceId);
       if (shownGenerator !== undefined || generator !== undefined) {
         // Only the shown environment's model list is loaded; elsewhere it must reach the same API.

@@ -7,7 +7,7 @@ import * as PlatformError from "effect/PlatformError";
 
 import { clearStaleGpuCaches, resolveUserDataPath } from "./DesktopUserData.ts";
 
-it.effect.each(["t3code", "T3 Code (Alpha)"])(
+it.effect.each(["t3code-zh-cn", "T3 Code 中文版"])(
   "preserves Windows credential keys from %s without copying browser databases",
   (sourceName) =>
     Effect.gen(function* () {
@@ -15,9 +15,9 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-profile-" });
       const source = path.join(directory, sourceName);
-      const destination = path.join(directory, "t3code-v2");
+      const destination = path.join(directory, "t3code-zh-cn-v2");
       const state = '{"os_crypt":{"encrypted_key":"test-encrypted-key"}}';
-      yield* fs.makeDirectory(path.join(directory, "T3 Code (Alpha)"), { recursive: true });
+      yield* fs.makeDirectory(path.join(directory, "T3 Code 中文版"), { recursive: true });
       yield* fs.makeDirectory(path.join(source, "IndexedDB"), { recursive: true });
       yield* fs.writeFileString(path.join(source, "Local State"), state);
       yield* fs.writeFileString(path.join(source, "IndexedDB", "LOCK"), "V1 owns this database");
@@ -40,6 +40,24 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
         "existing V2 state",
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps the official Electron profile separate", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zh-profile-" });
+    const official = path.join(directory, "t3code-v2");
+    yield* fs.makeDirectory(official, { recursive: true });
+    yield* fs.writeFileString(path.join(official, "Local State"), "official profile");
+    const selected = yield* resolveUserDataPath({
+      appDataDirectory: directory,
+      isDevelopment: false,
+      platform: "darwin",
+    });
+    assert.equal(selected, path.join(directory, "t3code-zh-cn-v2"));
+    assert.equal(yield* fs.readFileString(path.join(official, "Local State")), "official profile");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 const gpuCacheDirectories = [

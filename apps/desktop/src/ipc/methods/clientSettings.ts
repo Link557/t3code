@@ -1,9 +1,11 @@
-import { ClientSettingsSchema } from "@t3tools/contracts";
+import { ClientSettingsSchema, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
+import * as DesktopApplicationMenu from "../../window/DesktopApplicationMenu.ts";
+import * as DesktopTray from "../../window/DesktopTray.ts";
 import * as DesktopSnapShot from "../../snapShot/DesktopSnapShot.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -24,8 +26,18 @@ export const setClientSettings = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.clientSettings.set")(function* (settings) {
     const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
-    const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
+    const previousSettings = yield* clientSettings.get;
     yield* clientSettings.set(settings);
+    const previousAppLocale = Option.match(previousSettings, {
+      onNone: () => DEFAULT_CLIENT_SETTINGS.interfaceLanguage,
+      onSome: (value) => value.interfaceLanguage,
+    });
+    if (previousAppLocale !== settings.interfaceLanguage) {
+      const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
+      yield* applicationMenu.configure;
+      yield* (yield* DesktopTray.DesktopTray).refresh;
+    }
+    const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
     yield* snapShot.configure(settings);
   }),
 });

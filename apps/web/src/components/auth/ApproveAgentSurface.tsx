@@ -1,3 +1,6 @@
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { useI18n } from "~/i18n/WebI18nContext";
+import { translateConnectAgentSource } from "~/i18n/connectAgentMessages";
 import { useAuth, useClerk } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
@@ -33,6 +36,7 @@ function readEnvironmentId(): EnvironmentId | null {
 /** Sends each call with the owner's T3 Connect session and remembers where the environment is. */
 function connectTransport(
   environmentId: EnvironmentId,
+  translateSource: (source: string) => string,
   onEnvironment: (environment: { readonly url: string; readonly label: string }) => void,
 ): McpApprovalTransport {
   const send = async (
@@ -43,8 +47,8 @@ function connectTransport(
       return {
         kind: "error",
         message: isUnavailable(result.failure)
-          ? result.failure.message
-          : "Could not reach this environment. Try again.",
+          ? translateSource(result.failure.message)
+          : translateSource("Could not reach this environment. Try again."),
       };
     }
     onEnvironment({
@@ -73,6 +77,8 @@ function connectTransport(
  * T3 Connect here and approves with that session, so no sign-in code is needed.
  */
 export function ApproveAgentSurface() {
+  const { locale } = useI18n();
+  const tx = (source: string) => translateConnectAgentSource(locale, source);
   const [environmentId] = useState(readEnvironmentId);
   const [authorization] = useState(readAuthorizationRequest);
   // Another site could frame this page and steer a click onto Approve.
@@ -81,8 +87,11 @@ export function ApproveAgentSurface() {
     readonly url: string;
     readonly label: string;
   } | null>(null);
+  const translateSource = useStableCallback(tx);
   const [transport] = useState(() =>
-    environmentId === null ? null : connectTransport(environmentId, setEnvironment),
+    environmentId === null
+      ? null
+      : connectTransport(environmentId, translateSource, setEnvironment),
   );
   const clerk = useClerk();
   const { isLoaded, isSignedIn } = useAuth();
@@ -103,8 +112,8 @@ export function ApproveAgentSurface() {
   if (environmentId === null || transport === null) {
     return (
       <Message
-        title="This sign-in link is incomplete"
-        description="Close this page and start the sign-in again from your agent."
+        title={tx("This sign-in link is incomplete")}
+        description={tx("Close this page and start the sign-in again from your agent.")}
       />
     );
   }
@@ -112,8 +121,8 @@ export function ApproveAgentSurface() {
   if (framed) {
     return (
       <Message
-        title="Open this page in its own window"
-        description="For your safety, agent sign-ins cannot be approved inside another site."
+        title={tx("Open this page in its own window")}
+        description={tx("For your safety, agent sign-ins cannot be approved inside another site.")}
       />
     );
   }
@@ -122,9 +131,9 @@ export function ApproveAgentSurface() {
     return (
       <StandalonePage>
         <StandalonePageHeader
-          context="Agent sign-in"
-          title="Connecting to T3 Connect"
-          description="One moment while your account loads."
+          context={tx("Agent sign-in")}
+          title={tx("Connecting to T3 Connect")}
+          description={tx("One moment while your account loads.")}
         />
         <Spinner className="mt-6" size="lg" tone="muted" />
       </StandalonePage>
@@ -134,12 +143,12 @@ export function ApproveAgentSurface() {
   if (!isSignedIn) {
     return (
       <Message
-        title="Sign in to approve"
-        description="Sign in to T3 Connect with the account this environment is linked to."
+        title={tx("Sign in to approve")}
+        description={tx("Sign in to T3 Connect with the account this environment is linked to.")}
       >
         <div className="mt-6">
           <Button type="button" onClick={openSignIn}>
-            Sign in
+            {tx("Sign in")}
           </Button>
         </div>
       </Message>
@@ -164,7 +173,7 @@ export function ApproveAgentSurface() {
                 <a href={`${new URL("/connect-agent", environment.url).toString()}?${search}`} />
               }
             >
-              Use a sign-in code instead
+              {tx("Use a sign-in code instead")}
             </Button>
           ) : null}
           <Button
@@ -173,7 +182,7 @@ export function ApproveAgentSurface() {
             onClick={() => void clerk.signOut({ redirectUrl: window.location.href })}
             type="button"
           >
-            Use another account
+            {tx("Use another account")}
           </Button>
         </div>
       }
@@ -190,9 +199,11 @@ function Message({
   readonly description: string;
   readonly children?: ReactNode;
 }) {
+  const { locale } = useI18n();
+  const tx = (source: string) => translateConnectAgentSource(locale, source);
   return (
     <StandalonePage>
-      <StandalonePageHeader context="Agent sign-in" title={title} description={description} />
+      <StandalonePageHeader context={tx("Agent sign-in")} title={title} description={description} />
       {children}
     </StandalonePage>
   );

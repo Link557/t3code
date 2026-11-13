@@ -62,6 +62,14 @@ import {
   SpeechPostProcessingPromptSettings,
 } from "./speech.ts";
 
+// ── Client Settings (local-only) ───────────────────────────────
+
+export const AppLocalePreference = Schema.Literals(["system", "en", "zh-CN"]);
+export type AppLocalePreference = typeof AppLocalePreference.Type;
+export const InterfaceLanguage = Schema.Literals(["en", "zh-CN"]);
+export type InterfaceLanguage = typeof InterfaceLanguage.Type;
+export const DEFAULT_APP_LOCALE_PREFERENCE: InterfaceLanguage = "en";
+
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
 const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
@@ -390,12 +398,9 @@ export const VoiceTranscriptionDestination = Schema.Union([
 ]);
 export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination.Type;
 
-export const InterfaceLanguage = Schema.Literals(["en", "zh-CN"]);
-export type InterfaceLanguage = typeof InterfaceLanguage.Type;
-
 export const ClientSettingsSchema = Schema.Struct({
   interfaceLanguage: InterfaceLanguage.pipe(
-    Schema.withDecodingDefault(Effect.succeed("en" as const)),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APP_LOCALE_PREFERENCE)),
   ),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),

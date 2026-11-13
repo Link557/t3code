@@ -473,7 +473,7 @@ export const make = Effect.gen(function* () {
         platform: environment.platform,
         appImage: Option.getOrUndefined(config.appImagePath),
         isDebPackage,
-        disabledByEnv: config.disableAutoUpdate,
+        disabledByEnv: config.disableAutoUpdate || environment.appVersion.includes("-zh."),
         hasUpdateFeedConfig: hasFeedConfig,
       }),
     );

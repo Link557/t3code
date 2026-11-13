@@ -10,6 +10,7 @@ import {
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  DEFAULT_APP_LOCALE_PREFERENCE,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
@@ -40,6 +41,58 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+describe("ClientSettings app locale", () => {
+  it("defaults to English for legacy settings", () => {
+    expect(decodeClientSettings({}).interfaceLanguage).toBe(DEFAULT_APP_LOCALE_PREFERENCE);
+  });
+
+  it.each(["en", "zh-CN"] as const)(
+    "accepts a supported app locale preference: %s",
+    (interfaceLanguage) => {
+      expect(decodeClientSettings({ interfaceLanguage }).interfaceLanguage).toBe(interfaceLanguage);
+      expect(decodeClientSettingsPatch({ interfaceLanguage }).interfaceLanguage).toBe(
+        interfaceLanguage,
+      );
+    },
+  );
+
+  it.each(["system", "zh-TW", "fr", "", null])(
+    "rejects an unsupported app locale: %s",
+    (interfaceLanguage) => {
+      expect(() => decodeClientSettings({ interfaceLanguage })).toThrow();
+      expect(() => decodeClientSettingsPatch({ interfaceLanguage })).toThrow();
+    },
+  );
+});
+
+describe("ServerSettings response streaming", () => {
+  it("defaults to paragraph buffering", () => {
+    expect(decodeServerSettings({}).responseStreamingMode).toBe("paragraph");
+  });
+
+  it.each(["turn", "paragraph"])(
+    "round-trips %s as an environment setting and project override",
+    (responseStreamingMode) => {
+      const input = {
+        responseStreamingMode,
+        projectSettingsOverrides: { project: { responseStreamingMode } },
+      };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
+
+  it.each(["token", "unsupported"])("rejects %s in settings snapshots and writes", (mode) => {
+    for (const input of [
+      { responseStreamingMode: mode },
+      { projectSettingsOverrides: { project: { responseStreamingMode: mode } } },
+    ]) {
+      expect(() => decodeServerSettings(input)).toThrow();
+      expect(() => decodeServerSettingsPatch(input)).toThrow();
+    }
+  });
+});
 
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
@@ -300,17 +353,6 @@ describe("resolveIdleCompaction", () => {
     expect(idleCompactionPatch({ compactIdleThreads: false }, "beforeCacheExpires")).toEqual({
       compactIdleThreads: true,
     });
-  });
-});
-
-describe("ClientSettings interface language", () => {
-  it("defaults existing settings to English and validates language changes", () => {
-    expect(decodeClientSettings({}).interfaceLanguage).toBe("en");
-    expect(decodeClientSettings({ interfaceLanguage: "zh-CN" }).interfaceLanguage).toBe("zh-CN");
-    expect(decodeClientSettingsPatch({ interfaceLanguage: "zh-CN" })).toEqual({
-      interfaceLanguage: "zh-CN",
-    });
-    expect(() => decodeClientSettingsPatch({ interfaceLanguage: "invalid" })).toThrow();
   });
 });
 

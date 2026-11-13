@@ -1,8 +1,68 @@
+import { translateWebMessage } from "../../i18n/messages";
+import type { WebTranslate } from "../../i18n/WebI18nContext";
 import type {
   ServerProvider,
   ServerProviderVersionAdvisory,
   ServerProviderCompatibilityAdvisory,
 } from "@t3tools/contracts";
+
+const translateProviderEnglish: WebTranslate = (key, values) =>
+  translateWebMessage("en", key, values);
+
+function translateProviderMessage(message: string, t: WebTranslate): string {
+  if (
+    message ===
+    "Could not start Codex CLI (`codex`). Check Settings \u2192 Providers \u2192 Codex \u2192 Binary path on the server. Installing ChatGPT or Codex desktop may not add codex to PATH."
+  )
+    return t("providers.status.codexDefaultCliMissing");
+  if (message === "Claude Agent CLI (`claude`) was not found on PATH.")
+    return t("providers.status.claudeCliMissing");
+  if (message === "Failed to execute Claude Agent CLI health check.")
+    return t("providers.status.claudeHealthCheckFailed");
+  if (
+    message === "Claude Agent CLI is installed but failed to run. Timed out while running command."
+  )
+    return t("providers.status.claudeCliTimedOut");
+  if (message === "Claude Agent CLI is installed but failed to run.")
+    return t("providers.status.claudeCliFailed");
+  if (message === "Claude provider status has not been checked in this session yet.")
+    return t("providers.status.claudeStatusUnchecked");
+  if (message === "Codex provider status has not been checked in this session yet.")
+    return t("providers.status.codexStatusUnchecked");
+  if (message === "Codex CLI is not authenticated. Run `codex login` and try again.")
+    return t("providers.status.codexLoginRequired");
+  if (message === "Timed out while checking Codex app-server provider status.")
+    return t("providers.status.codexStatusTimedOut");
+  if (message === "Codex did not return its model catalog in time.")
+    return t("providers.status.codexModelCatalogTimedOut");
+  const disabledMatch = /^(.+?) is disabled in T3 Code settings\.$/.exec(message);
+  if (disabledMatch) {
+    return t("providers.status.disabledMessage", { provider: disabledMatch[1]! });
+  }
+
+  const missingCliMatch = /^(.+?) CLI \((.+)\) is not installed or not on PATH\.$/.exec(message);
+  if (missingCliMatch) {
+    return t("providers.status.cliMissing", {
+      provider: missingCliMatch[1]!,
+      command: missingCliMatch[2]!,
+    });
+  }
+
+  const oldVersionMatch =
+    /^(.+?) (v?[\d.]+) is too old for (.+?)\. Upgrade to (v?[\d.]+) or newer to access it\.$/.exec(
+      message,
+    );
+  if (oldVersionMatch) {
+    return t("providers.status.versionTooOld", {
+      provider: oldVersionMatch[1]!,
+      current: oldVersionMatch[2]!,
+      model: oldVersionMatch[3]!,
+      required: oldVersionMatch[4]!,
+    });
+  }
+
+  return message;
+}
 
 export const PROVIDER_STATUS_STYLES = {
   disabled: {
@@ -44,61 +104,74 @@ export function getProviderStatusKey(provider: ServerProvider | undefined): Prov
   return provider?.status ?? "warning";
 }
 
-export function getProviderSummary(provider: ServerProvider | undefined) {
+export function getProviderSummary(
+  provider: ServerProvider | undefined,
+  t: WebTranslate = translateProviderEnglish,
+) {
   if (!provider) {
     return {
-      headline: "Checking provider status",
-      detail: "Waiting for the server to report installation and authentication details.",
+      headline: t("providers.status.checking"),
+      detail: t("providers.status.waiting"),
     };
   }
   if (!provider.enabled || provider.status === "disabled") {
     return {
-      headline: "Disabled",
-      detail:
-        provider.message ?? "This provider is installed but disabled for new sessions in T3 Code.",
+      headline: t("providers.status.disabled"),
+      detail: provider.message
+        ? translateProviderMessage(provider.message, t)
+        : t("providers.status.disabledDetail"),
     };
   }
   if (!provider.installed) {
     return {
-      headline: "Not found",
-      detail: provider.message ?? "CLI not detected on PATH.",
+      headline: t("providers.status.notFound"),
+      detail: provider.message
+        ? translateProviderMessage(provider.message, t)
+        : t("providers.status.cliNotDetected"),
     };
   }
   if (provider.auth.status === "unauthenticated") {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
-      headline: authLabel ? `Not authenticated · ${authLabel}` : "Not authenticated",
-      detail: provider.message ?? null,
+      headline: authLabel
+        ? `${t("providers.status.notAuthenticated")} · ${authLabel}`
+        : t("providers.status.notAuthenticated"),
+      detail: provider.message ? translateProviderMessage(provider.message, t) : null,
     };
   }
   if (isAntigravitySignInUnchecked(provider)) {
     return {
-      headline: "Installed · Sign-in not checked",
+      headline: t("providers.status.signInUnchecked"),
       detail: provider.message ?? null,
     };
   }
   if (provider.status === "warning") {
     return {
-      headline: "Needs attention",
-      detail:
-        provider.message ?? "The provider is installed, but the server could not fully verify it.",
+      headline: t("providers.status.needsAttention"),
+      detail: provider.message
+        ? translateProviderMessage(provider.message, t)
+        : t("providers.status.needsAttentionDetail"),
     };
   }
   if (provider.status === "error") {
     return {
-      headline: "Unavailable",
-      detail: provider.message ?? "The provider failed its startup checks.",
+      headline: t("providers.status.unavailable"),
+      detail: provider.message
+        ? translateProviderMessage(provider.message, t)
+        : t("providers.status.unavailableDetail"),
     };
   }
   if (provider.auth.status === "authenticated") {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
-      headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
+      headline: authLabel
+        ? t("providers.status.authenticatedWith", { method: authLabel })
+        : t("providers.status.authenticated"),
       detail: provider.message ?? null,
     };
   }
   return {
-    headline: "Available",
+    headline: t("providers.status.available"),
     detail: provider.message ?? null,
   };
 }
@@ -123,6 +196,7 @@ export function getProviderVersionAdvisoryPresentation(
   advisory: ServerProviderVersionAdvisory | undefined,
   compatibility?: ServerProviderCompatibilityAdvisory | undefined,
   showCompatibility = true,
+  t: WebTranslate = translateProviderEnglish,
 ): {
   readonly title: string;
   readonly detail: string;
@@ -166,17 +240,17 @@ export function getProviderVersionAdvisoryPresentation(
     return null;
   }
 
-  const label = "Update available";
+  const label = t("providers.update.available");
   const version = advisory.latestVersion;
   const versionLabel = getProviderVersionLabel(version);
 
   return {
     title: label,
     detail:
-      advisory.message ??
+      (advisory.message ? translateProviderMessage(advisory.message, t) : null) ??
       (versionLabel
-        ? `${label}: install ${versionLabel}.`
-        : `${label}: install the latest provider version.`),
+        ? t("providers.update.installVersion", { version: versionLabel })
+        : t("providers.update.installLatest")),
     updateCommand: advisory.updateCommand,
     emphasis: "normal" as const,
     targetVersion: null,

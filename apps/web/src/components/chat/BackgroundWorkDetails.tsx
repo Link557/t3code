@@ -1,3 +1,4 @@
+import { useI18n } from "../../i18n/WebI18nContext";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
@@ -25,14 +26,15 @@ export function BackgroundWorkDetails(props: {
   readonly turnItems: ThreadStructure["turnItems"];
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const streamsOutput = useCommandOutputStreaming(props.environmentId);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<InlineButton />}>Details</DialogTrigger>
+      <DialogTrigger render={<InlineButton />}>{t("v019.backgroundDetails")}</DialogTrigger>
       <DialogPopup>
         <DialogHeader>
-          <DialogTitle>Background work</DialogTitle>
+          <DialogTitle>{t("v019.backgroundWork")}</DialogTitle>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-5">
@@ -49,8 +51,16 @@ export function BackgroundWorkDetails(props: {
                 description && description !== command?.trim()
                   ? description
                   : command
-                    ? "Command"
-                    : task.kind.replaceAll("_", " ");
+                    ? t("v019.backgroundCommand")
+                    : t(
+                        task.kind === "subagent"
+                          ? "v019.backgroundSubagent"
+                          : task.kind === "command"
+                            ? "v019.backgroundCommandKind"
+                            : task.kind === "monitor"
+                              ? "v019.backgroundMonitor"
+                              : "v019.backgroundTaskKind",
+                      );
               const itemId =
                 task.itemId ?? (item?.type === "command_execution" ? item.id : undefined);
               const childThreadId = task.kind === "subagent" ? task.childThreadId : undefined;
@@ -59,7 +69,7 @@ export function BackgroundWorkDetails(props: {
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-medium">{title}</h3>
                     <span className="shrink-0 text-xs text-muted-foreground">
-                      {task.awaited ? "Waiting" : "Running"}
+                      {t(task.awaited ? "v019.backgroundWaiting" : "v019.backgroundRunning")}
                     </span>
                   </div>
                   {command ? (
@@ -83,7 +93,7 @@ export function BackgroundWorkDetails(props: {
                         props.onOpenThread(childThreadId);
                       }}
                     >
-                      Open thread
+                      {t("v019.backgroundOpen")}
                     </InlineButton>
                   ) : null}
                 </section>

@@ -14,6 +14,8 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { act, render } from "../../../test/render";
+import { WebI18nContext } from "../../i18n/WebI18nContext";
+import { translateWebMessage } from "../../i18n/messages";
 import { ScheduledTasksSettings } from "./ScheduledTasksSettings";
 
 const environmentId = EnvironmentId.make("laptop");
@@ -47,7 +49,13 @@ const threadFamilyRead = {
   threads: [{ id: task.threadId, title: "Fix login bug" }],
 };
 
-const state = vi.hoisted(() => ({ connected: true, tasksLoaded: true, secondary: false }));
+const state = vi.hoisted(() => ({
+  connected: true,
+  tasksLoaded: true,
+  secondary: false,
+  taskTitle: "Review issues",
+  environmentLabel: "Laptop",
+}));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
 
@@ -55,6 +63,8 @@ function setup() {
   state.connected = true;
   state.tasksLoaded = true;
   state.secondary = false;
+  state.taskTitle = "Review issues";
+  state.environmentLabel = "Laptop";
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
   permissions.set(secondaryId, Atom.make(true));
@@ -68,7 +78,7 @@ function secondaryEnvironment() {
 function environment() {
   return {
     environmentId,
-    label: "Laptop",
+    label: state.environmentLabel,
     connection: { phase: state.connected ? "connected" : "disconnected" },
     serverConfig: state.connected
       ? { environment: { platform: "linux", capabilities: { oneTimeSchedules: true } } }
@@ -125,7 +135,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [task] : [] },
+        : { tasks: state.tasksLoaded ? [{ ...task, title: state.taskTitle }] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -146,6 +156,31 @@ vi.mock(import("../../hooks/useSettings"), async (original) => ({
 }));
 
 describe("ScheduledTasksSettings", () => {
+  it("keeps user task and environment names when they match translated UI text", async () => {
+    setup();
+    state.taskTitle = "New task";
+    state.environmentLabel = "Settings";
+    await using screen = await render(
+      <WebI18nContext
+        value={{
+          locale: "zh-CN",
+          interfaceLanguage: "zh-CN",
+          setAppLocale: () => undefined,
+          t: (key, values) => translateWebMessage("zh-CN", key, values),
+        }}
+      >
+        <ScheduledTasksSettings />
+      </WebI18nContext>,
+    );
+    await expect
+      .element(screen.getByRole("heading", { name: "New task", level: 3, exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByRole("heading", { name: "Settings", level: 2, exact: true }))
+      .toBeInTheDocument();
+    await expect.element(screen.getByRole("button", { name: "新建任务" })).toBeEnabled();
+  });
+
   it("creates on a permitted secondary and reacts to permission changes", async () => {
     setup();
     state.secondary = true;
@@ -215,4 +250,46 @@ describe("ScheduledTasksSettings", () => {
     await expect.element(dialog.getByRole("heading", { name: "New task" })).toBeInTheDocument();
     await expect.element(name).toHaveValue("My draft");
   });
+});
+
+it("localizes the destination picker and deletion consequence while preserving the selected thread", async () => {
+  setup();
+  const settings = (locale: "en" | "zh-CN") => (
+    <WebI18nContext
+      value={{
+        locale,
+        interfaceLanguage: locale,
+        setAppLocale: () => undefined,
+        t: (key, values) => translateWebMessage(locale, key, values),
+      }}
+    >
+      <ScheduledTasksSettings taskId={task.id} />
+    </WebI18nContext>
+  );
+  await using screen = await render(settings("zh-CN"));
+  const dialog = page.getByRole("dialog");
+  await expect.element(dialog.getByText("Fix login bug", { exact: true })).toBeVisible();
+  await expect
+    .element(dialog.getByText("删除此会话也会删除该定时任务。", { exact: true }))
+    .toBeVisible();
+  await userEvent.click(dialog.getByText("Fix login bug", { exact: true }));
+  const search = page.getByPlaceholder("搜索所有会话...");
+  await expect.element(search).toBeVisible();
+  await userEvent.fill(search, "no matching thread");
+  await expect.element(page.getByText("未找到会话。", { exact: true })).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog.getByText("Fix login bug", { exact: true })).toBeVisible();
+  await userEvent.click(dialog.getByText("Fix login bug", { exact: true }));
+  await expect.element(page.getByPlaceholder("搜索所有会话...")).toHaveValue("");
+  await expect
+    .element(page.getByRole("option", { name: "每次运行新建会话", exact: true }))
+    .toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await screen.rerender(settings("en"));
+  await expect.element(dialog.getByText("Fix login bug", { exact: true })).toBeVisible();
+  await expect
+    .element(dialog.getByText("Deleting the thread also deletes this task.", { exact: true }))
+    .toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
 });

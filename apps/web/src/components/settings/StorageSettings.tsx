@@ -1,3 +1,10 @@
+import {
+  cleanupRunPresentation,
+  cleanupPendingDescription,
+  cleanupLastRunSummary,
+} from "./settingsFollowupPresentation";
+import { translateWebSource } from "../../i18n/messages";
+import { useI18n } from "../../i18n/WebI18nContext";
 import type {
   StorageCleanupReport,
   StorageCleanupSettings,
@@ -15,7 +22,6 @@ import { formatBytes } from "../../lib/formatBytes";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useDebouncedValue } from "../../state/queries";
 import { AnimatedHeight } from "../AnimatedHeight";
@@ -50,6 +56,7 @@ import {
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
 
 export function WorktreesDirectoryRow() {
+  const { locale: translationLocale } = useI18n();
   const { connectedEnvironments, targets } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -84,10 +91,10 @@ export function WorktreesDirectoryRow() {
       control={
         <Input
           key={`${scopeKey}:${mixed}:${settings.worktreesDirectory}`}
-          aria-label="Worktree location"
+          aria-label={translateWebSource(translationLocale, "Worktree location")}
           autoCapitalize="none"
           spellCheck={false}
-          placeholder={mixed ? "Mixed" : "Default"}
+          placeholder={translateWebSource(translationLocale, mixed ? "Mixed" : "Default")}
           defaultValue={mixed ? "" : settings.worktreesDirectory}
           onFocus={(event) => {
             draft.current = event.target.value;
@@ -120,6 +127,8 @@ function RetentionControl({
   onChange: (value: number | null) => void;
   minimum?: number;
 }) {
+  const { locale } = useI18n();
+  const localizedLabel = translateWebSource(locale, label);
   const [draft, setDraft] = useState(value);
   const [savedValue, setSavedValue] = useState(value);
   if (savedValue !== value) {
@@ -148,23 +157,29 @@ function RetentionControl({
           }}
         >
           <NumberFieldGroup>
-            <NumberFieldDecrement aria-label={`Decrease ${label}`} />
+            <NumberFieldDecrement
+              aria-label={locale === "zh-CN" ? `减少${localizedLabel}` : `Decrease ${label}`}
+            />
             <NumberFieldInput
-              aria-label={`${label} in days`}
+              aria-label={locale === "zh-CN" ? `${localizedLabel}（天）` : `${label} in days`}
               size={5}
               className="w-auto grow-0 text-right"
             />
             <span aria-hidden="true" className="self-center pr-2 text-xs">
-              days
+              {locale === "zh-CN" ? "天" : translateWebSource(locale, "days")}
             </span>
-            <NumberFieldIncrement aria-label={`Increase ${label}`} />
+            <NumberFieldIncrement
+              aria-label={locale === "zh-CN" ? `增加${localizedLabel}` : `Increase ${label}`}
+            />
           </NumberFieldGroup>
         </NumberField>
       ) : (
-        <span className="text-xs text-muted-foreground">Off</span>
+        <span className="text-xs text-muted-foreground">
+          {locale === "zh-CN" ? "关闭" : translateWebSource(locale, "Off")}
+        </span>
       )}
       <Switch
-        aria-label={label}
+        aria-label={localizedLabel}
         checked={value !== null}
         onCheckedChange={(enabled) => onChange(enabled ? 8 : null)}
       />
@@ -178,19 +193,6 @@ const KEEP_WHEN_LABELS = {
   "tracked-changes": "Edited tracked files",
 } as const;
 
-function lastRunSummary(
-  entries: readonly { readonly label: string; readonly counts: string }[],
-  machineCount: number,
-) {
-  const first = entries[0];
-  if (!first) return "";
-  if (machineCount <= 1) return first.counts;
-  if (entries.length === machineCount && entries.every((entry) => entry.counts === first.counts)) {
-    return `${first.counts} on every machine`;
-  }
-  return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
-}
-
 function CleanupResults({
   report,
   environmentLabel,
@@ -198,6 +200,7 @@ function CleanupResults({
   report: StorageCleanupReport;
   environmentLabel: string;
 }) {
+  const { locale: sourceLocale, t } = useI18n();
   return (
     <>
       {report.entries.map((entry, index) => {
@@ -205,10 +208,11 @@ function CleanupResults({
           entry.kind === "worktree"
             ? ((entry.threadId === null
                 ? entry.path
-                : entry.path?.split(/[\\/]/).findLast(Boolean)) ?? "Worktrees")
+                : entry.path?.split(/[\\/]/).findLast(Boolean)) ??
+              translateWebSource(sourceLocale, "Worktrees"))
             : entry.kind === "logs"
-              ? "Rotated logs"
-              : "Browser artifacts";
+              ? translateWebSource(sourceLocale, "Rotated logs")
+              : translateWebSource(sourceLocale, "Browser artifacts");
         return (
           <SettingsRow
             key={`${entry.path ?? entry.kind}:${entry.threadId ?? index}`}
@@ -219,23 +223,23 @@ function CleanupResults({
                   {entry.reason}
                 </span>
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
-                  <span>Machine</span>
+                  <span>{translateWebSource(sourceLocale, "Machine")}</span>
                   <span className="text-foreground/80">{environmentLabel}</span>
                   {entry.projectPath && (
                     <>
-                      <span>Project</span>
+                      <span>{translateWebSource(sourceLocale, "Project")}</span>
                       <code className="text-foreground/80">{entry.projectPath}</code>
                     </>
                   )}
                   {entry.path && (
                     <>
-                      <span>Folder</span>
+                      <span>{translateWebSource(sourceLocale, "Folder")}</span>
                       <code className="text-foreground/80">{entry.path}</code>
                     </>
                   )}
                   {entry.threadTitle && (
                     <>
-                      <span>Thread</span>
+                      <span>{translateWebSource(sourceLocale, "Thread")}</span>
                       <span>{entry.threadTitle}</span>
                     </>
                   )}
@@ -248,7 +252,12 @@ function CleanupResults({
                 <span className="text-xs text-muted-foreground">
                   {[
                     entry.kind !== "worktree" && entry.files !== null
-                      ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
+                      ? t(
+                          entry.files === 1
+                            ? "storage.cleanup.fileOne"
+                            : "storage.cleanup.fileMany",
+                          { count: entry.files.toLocaleString() },
+                        )
                       : null,
                     entry.bytes !== null ? formatBytes(entry.bytes) : null,
                   ]
@@ -262,12 +271,16 @@ function CleanupResults({
       })}
       {report.omittedCount > 0 && (
         <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: {report.omittedCount.toLocaleString()} more results.
+          {t("storage.cleanup.moreResults", {
+            environment: environmentLabel,
+            count: report.omittedCount.toLocaleString(),
+          })}
         </p>
       )}
       {report.entries.length === 0 && report.omittedCount === 0 && (
         <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: Nothing needed cleanup.
+          {environmentLabel}
+          {translateWebSource(sourceLocale, ": Nothing needed cleanup.")}
         </p>
       )}
     </>
@@ -284,6 +297,7 @@ const storageCleanupPermissionsAtom = environmentAtomList(
 );
 
 function CleanupSection() {
+  const { locale: translationLocale } = useI18n();
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   const { connectedEnvironments } = useSettingsScope();
@@ -332,16 +346,10 @@ function CleanupSection() {
       environment,
       report,
       label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
-      counts: report
-        ? `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed > 0 ? `, ${report.counts.failed} failed` : ""}`
-        : "",
+      counts: report ? cleanupRunPresentation(translationLocale, report, nowMs).counts : "",
       description: report
-        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${formatBytes(report.bytesFreed)} recovered.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
-        : query?.failed
-          ? "Could not load the last run."
-          : query?.loading
-            ? "Loading last run…"
-            : "Cleanup hasn't run yet.",
+        ? cleanupRunPresentation(translationLocale, report, nowMs).description
+        : cleanupPendingDescription(translationLocale, query),
     };
   });
   const deleteNow = async () => {
@@ -380,7 +388,7 @@ function CleanupSection() {
           description={
             <span>
               {!hasRules
-                ? "Turn on a cleanup rule to use this."
+                ? translateWebSource(translationLocale, "Turn on a cleanup rule to use this.")
                 : summaries.map(({ environment, label, description }) => (
                     <span key={environment.environmentId} className="block">
                       {supported.length > 1 ? `${label}: ` : ""}
@@ -396,7 +404,9 @@ function CleanupSection() {
               disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
               onClick={() => void deleteNow()}
             >
-              {pending ? "Deleting…" : "Delete now"}
+              {pending
+                ? translateWebSource(translationLocale, "Deleting…")
+                : translateWebSource(translationLocale, "Delete now")}
             </Button>
           }
         />
@@ -404,11 +414,12 @@ function CleanupSection() {
       {summaries.some(({ report }) => report !== null) && (
         <FoldedSettingsSection
           id="storage-cleanup-last-run"
-          title="Last run"
+          title={translateWebSource(translationLocale, "Last run")}
           headerPlacement="inside"
-          summary={lastRunSummary(
+          summary={cleanupLastRunSummary(
             summaries.filter(({ report }) => report !== null),
             connectedEnvironments.length,
+            translationLocale,
           )}
         >
           {summaries.map(
@@ -441,6 +452,7 @@ function supportsStorageCleanup(
 
 /** Narrows a mixed selection to the machines that support cleanup. */
 function StorageCleanupScopeNotice() {
+  const { locale: translationLocale } = useI18n();
   const { connectedEnvironments } = useSettingsScope();
   return (
     <SettingsScopeNotice
@@ -453,12 +465,16 @@ function StorageCleanupScopeNotice() {
         )
         .map((environment) => environment.environmentId)}
     >
-      Update the selected environments to use storage cleanup, or choose a machine that supports it.
+      {translateWebSource(
+        translationLocale,
+        "Update the selected environments to use storage cleanup, or choose a machine that supports it.",
+      )}
     </SettingsScopeNotice>
   );
 }
 
 export function WorktreeCleanupSection() {
+  const { locale: translationLocale } = useI18n();
   const { scope, environments, connectedEnvironments, targets, target } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
@@ -503,7 +519,10 @@ export function WorktreeCleanupSection() {
     return (
       <SettingsSection id="storage-worktrees" title="Cleanup" variant="plain">
         <SettingsScopeNotice inline target="all">
-          Update the selected machines to configure project worktree cleanup.
+          {translateWebSource(
+            translationLocale,
+            "Update the selected machines to configure project worktree cleanup.",
+          )}
         </SettingsScopeNotice>
       </SettingsSection>
     );
@@ -542,21 +561,30 @@ export function WorktreeCleanupSection() {
                     updateSettings({ worktreeCleanup: { mode: "custom", rules: {} } });
                 }}
               >
-                <SelectTrigger size="sm" aria-label="Automatic worktree cleanup">
+                <SelectTrigger
+                  size="sm"
+                  aria-label={translateWebSource(translationLocale, "Automatic worktree cleanup")}
+                >
                   <SelectValue>
                     {mixedModes
-                      ? "Mixed"
+                      ? translateWebSource(translationLocale, "Mixed")
                       : mode === "inherit"
-                        ? "Inherit"
+                        ? translateWebSource(translationLocale, "Inherit")
                         : mode === "off"
-                          ? "Off"
-                          : "Custom"}
+                          ? translateWebSource(translationLocale, "Off")
+                          : translateWebSource(translationLocale, "Custom")}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  <SelectItem value="inherit">Inherit</SelectItem>
-                  <SelectItem value="off">Off</SelectItem>
-                  <SelectItem value="custom">Custom</SelectItem>
+                  <SelectItem value="inherit">
+                    {translateWebSource(translationLocale, "Inherit")}
+                  </SelectItem>
+                  <SelectItem value="off">
+                    {translateWebSource(translationLocale, "Off")}
+                  </SelectItem>
+                  <SelectItem value="custom">
+                    {translateWebSource(translationLocale, "Custom")}
+                  </SelectItem>
                 </SelectPopup>
               </Select>
             }
@@ -572,7 +600,10 @@ export function WorktreeCleanupSection() {
               serverScoped={!isProjectScope}
               control={
                 <Switch
-                  aria-label="Delete worktrees with deleted threads"
+                  aria-label={translateWebSource(
+                    translationLocale,
+                    "Delete worktrees with deleted threads",
+                  )}
                   checked={settings.worktreeOnDelete}
                   onCheckedChange={(worktreeOnDelete) => updateWorktree({ worktreeOnDelete })}
                 />
@@ -586,7 +617,7 @@ export function WorktreeCleanupSection() {
               serverScoped={!isProjectScope}
               control={
                 <Switch
-                  aria-label="Delete merged worktrees"
+                  aria-label={translateWebSource(translationLocale, "Delete merged worktrees")}
                   checked={settings.worktreeOnMerge}
                   onCheckedChange={(worktreeOnMerge) => updateWorktree({ worktreeOnMerge })}
                 />
@@ -649,7 +680,7 @@ export function WorktreeCleanupSection() {
                 serverScoped={!isProjectScope}
                 control={
                   <Switch
-                    aria-label="Delete unchanged worktrees"
+                    aria-label={translateWebSource(translationLocale, "Delete unchanged worktrees")}
                     checked={settings.worktreeUnchanged}
                     onCheckedChange={(worktreeUnchanged) => updateWorktree({ worktreeUnchanged })}
                   />
@@ -683,17 +714,32 @@ export function WorktreeCleanupSection() {
                           updateWorktree({ worktreeKeepWhen: next });
                       }}
                     >
-                      <SelectTrigger size="sm" aria-label="Keep worktrees with local changes">
+                      <SelectTrigger
+                        size="sm"
+                        aria-label={translateWebSource(
+                          translationLocale,
+                          "Keep worktrees with local changes",
+                        )}
+                      >
                         <SelectValue>
                           {ruleStatus("worktreeKeepWhen")
-                            ? "Mixed"
-                            : KEEP_WHEN_LABELS[settings.worktreeKeepWhen]}
+                            ? translateWebSource(translationLocale, "Mixed")
+                            : translateWebSource(
+                                translationLocale,
+                                KEEP_WHEN_LABELS[settings.worktreeKeepWhen],
+                              )}
                         </SelectValue>
                       </SelectTrigger>
                       <SelectPopup align="end" alignItemWithTrigger={false}>
-                        <SelectItem value="any-local-files">Any local files</SelectItem>
-                        <SelectItem value="uncommitted-changes">Uncommitted changes</SelectItem>
-                        <SelectItem value="tracked-changes">Edited tracked files</SelectItem>
+                        <SelectItem value="any-local-files">
+                          {translateWebSource(translationLocale, "Any local files")}
+                        </SelectItem>
+                        <SelectItem value="uncommitted-changes">
+                          {translateWebSource(translationLocale, "Uncommitted changes")}
+                        </SelectItem>
+                        <SelectItem value="tracked-changes">
+                          {translateWebSource(translationLocale, "Edited tracked files")}
+                        </SelectItem>
                       </SelectPopup>
                     </Select>
                   }

@@ -1,3 +1,5 @@
+import { useI18n } from "~/i18n/WebI18nContext";
+import { translateWebSource } from "~/i18n/messages";
 import type {
   ChatAttachment,
   ChatFileAttachment,
@@ -61,10 +63,11 @@ function ComposerAttachmentUploadProgress({
 }
 
 function ComposerImageFallback() {
+  const { t } = useI18n();
   return (
     <span
       role="img"
-      aria-label="Image attachment"
+      aria-label={t("v019.imageAttachment")}
       className="flex size-full items-center justify-center p-3 text-secondary-label"
     >
       <ImageIcon aria-hidden="true" className="size-4" />
@@ -172,6 +175,8 @@ export function ComposerAttachmentMediaRow({
   readonly onRemoveImage: (imageId: string) => void;
   readonly onRemoveFile: (fileId: string) => void;
 }) {
+  const { t } = useI18n();
+
   const uploadsByImageId = useAttachmentUploadStore((state) => state.uploadsByImageId);
   const pendingSnapShotIdSet = new Set(pendingSnapShotIds);
   const nonPersistedImageIdSet = new Set(nonPersistedImageIds);
@@ -266,7 +271,7 @@ export function ComposerAttachmentMediaRow({
                     render={
                       <span
                         role="img"
-                        aria-label="Draft attachment may not persist"
+                        aria-label={t("composer.attachmentWarningLabel")}
                         className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-warning-foreground"
                       >
                         <CircleAlertIcon className="size-3" />
@@ -274,7 +279,7 @@ export function ComposerAttachmentMediaRow({
                     }
                   />
                   <TooltipPopup side="top">
-                    Draft attachment could not be saved locally and may be lost on navigation.
+                    {t("composer.attachmentWarningDescription")}
                   </TooltipPopup>
                 </Tooltip>
               )}
@@ -283,7 +288,7 @@ export function ComposerAttachmentMediaRow({
                   {upload?.status === "uploading" ? (
                     <ComposerAttachmentUploadProgress id={image.id} upload={upload} />
                   ) : (
-                    "Preparing"
+                    t("v019.preparing")
                   )}
                 </span>
               )}
@@ -450,6 +455,8 @@ export function ComposerAttachmentFileList({
   readonly onPreviewFile: (fileId: string) => void;
   readonly onRemoveFile: (fileId: string) => void;
 }) {
+  const { locale: releaseLocale } = useI18n();
+
   const uploadsByImageId = useAttachmentUploadStore((state) => state.uploadsByImageId);
   return (
     <div className="mb-3 flex flex-col gap-1">
@@ -478,9 +485,9 @@ export function ComposerAttachmentFileList({
             <span className="shrink-0 text-xs text-secondary-label">
               {needsReattach ? (
                 canReattachFile ? (
-                  "Attach again"
+                  translateWebSource(releaseLocale, "Attach again")
                 ) : (
-                  "Remove to send"
+                  translateWebSource(releaseLocale, "Remove to send")
                 )
               ) : upload?.status === "uploading" ? (
                 <ComposerAttachmentUploadProgress
@@ -706,6 +713,8 @@ export function ComposerAttachButton({
   readonly addComposerAttachments: (files: File[]) => Promise<boolean>;
   readonly focusComposer: () => void;
 }) {
+  const { t } = useI18n();
+
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <>
@@ -734,14 +743,14 @@ export function ComposerAttachButton({
               size="icon-sm"
               onPointerDown={(event) => event.preventDefault()}
               onClick={() => inputRef.current?.click()}
-              aria-label="Attach files"
+              aria-label={t("composer.attachment.attachFiles")}
             />
           }
         >
           {/* The clip's weight sits in its upper loop; 1px down reads as centered on the row. */}
           <PaperclipIcon className="translate-y-px" />
         </TooltipTrigger>
-        <TooltipPopup>Attach files</TooltipPopup>
+        <TooltipPopup>{t("composer.attachment.attachFiles")}</TooltipPopup>
       </Tooltip>
     </>
   );

@@ -1,3 +1,6 @@
+import { useI18n } from "~/i18n/WebI18nContext";
+import { translateWebSource } from "~/i18n/messages";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
@@ -90,8 +93,11 @@ interface BranchToolbarBranchSelectorProps {
   onComposerFocusRequest?: () => void;
 }
 
-function toBranchActionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "An error occurred.";
+function toBranchActionErrorMessage(
+  error: unknown,
+  translate: (source: string) => string = (source) => source,
+): string {
+  return error instanceof Error ? error.message : translate("An error occurred.");
 }
 
 export function BranchToolbarBranchSelector({
@@ -111,6 +117,10 @@ export function BranchToolbarBranchSelector({
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
 }: BranchToolbarBranchSelectorProps) {
+  const { locale, t } = useI18n();
+  const translate = (source: string) => translateWebSource(locale, source);
+  const translateAction = useStableCallback(translate);
+
   const composerFloatingLayerProps = useComposerMenuProps();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const canOperateThread = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
@@ -319,20 +329,20 @@ export function BranchToolbarBranchSelector({
   const [isBranchActionPending, startBranchActionTransition] = useTransition();
   const totalBranchCount = branchRefState.data?.totalCount ?? 0;
   const branchStatusText = isInitialBranchesLoadPending
-    ? "Loading refs..."
+    ? translate("Loading refs...")
     : isFetchingNextPage
-      ? "Loading more refs..."
+      ? translate("Loading more refs...")
       : hasNextPage
-        ? `Showing ${refs.length} of ${totalBranchCount} refs`
+        ? t("coreResidual.refs", { shown: refs.length, total: totalBranchCount })
         : null;
 
   const copyBranchName = (branchName: string) => {
-    void writeTextToClipboard(branchName, "branch name").then(
+    void writeTextToClipboard(branchName, translateAction("branch name")).then(
       (didCopy) => {
         if (!didCopy) return;
         toastManager.add({
           type: "success",
-          title: "Branch name copied",
+          title: translateAction("Branch name copied"),
           description: branchName,
         });
       },
@@ -340,8 +350,8 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to copy branch name",
-            description: toBranchActionErrorMessage(error),
+            title: translateAction("Failed to copy branch name"),
+            description: toBranchActionErrorMessage(error, translateAction),
           }),
         );
       },
@@ -355,7 +365,7 @@ export function BranchToolbarBranchSelector({
     event.preventDefault();
     event.stopPropagation();
     const items: ContextMenuItem<"copy-branch-name">[] = [
-      { id: "copy-branch-name", label: "Copy branch name", icon: "copy" },
+      { id: "copy-branch-name", label: translateAction("Copy branch name"), icon: "copy" },
     ];
     void api.contextMenu.show(items, { x: event.clientX, y: event.clientY }).then((action) => {
       if (action === "copy-branch-name") copyBranchName(branchName);
@@ -370,8 +380,8 @@ export function BranchToolbarBranchSelector({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Action unavailable",
-          description: "This connection cannot change the thread's branch.",
+          title: translateAction("Action unavailable"),
+          description: translateAction("This connection cannot change the thread's branch."),
         }),
       );
       return;
@@ -437,8 +447,11 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to switch ref.",
-            description: toBranchActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
+            title: translateAction("Failed to switch ref."),
+            description: toBranchActionErrorMessage(
+              squashAtomCommandFailure(checkoutResult),
+              translateAction,
+            ),
           }),
         );
       }
@@ -474,8 +487,11 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to create and switch ref.",
-            description: toBranchActionErrorMessage(squashAtomCommandFailure(createBranchResult)),
+            title: translateAction("Failed to create and switch ref."),
+            description: toBranchActionErrorMessage(
+              squashAtomCommandFailure(createBranchResult),
+              translateAction,
+            ),
           }),
         );
       }
@@ -600,7 +616,9 @@ export function BranchToolbarBranchSelector({
             <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="flex min-w-0 flex-col items-start">
               <span className="truncate font-medium">
-                Checkout {sourceControlPresentation.terminology.singular}
+                {t("coreResidual.checkout", {
+                  type: translate(sourceControlPresentation.terminology.singular),
+                })}
               </span>
               <span className="truncate text-muted-foreground text-xs">{prReference}</span>
             </span>
@@ -617,7 +635,7 @@ export function BranchToolbarBranchSelector({
           value={itemValue}
           onClick={() => selectPickerItem(itemValue)}
         >
-          <span className="truncate">Create new ref &quot;{newRefName}&quot;</span>
+          <span className="truncate">{t("coreResidual.createRef", { name: newRefName })}</span>
         </ComboboxItem>
       );
     }
@@ -731,7 +749,19 @@ export function BranchToolbarBranchSelector({
               )}
             />
             <ComposerContextLabel displayMode={displayMode}>
-              <MiddleTruncate value={triggerLabel} variant="cap-aligned" className="w-full" />
+              <MiddleTruncate
+                value={
+                  locale === "zh-CN"
+                    ? !resolvedActiveBranch
+                      ? translate("Select ref")
+                      : effectiveEnvMode === "worktree" && !activeWorktreePath
+                        ? `基于 ${resolvedActiveBranch}${startFromOrigin && resolvedActiveBranchIsRemote === false ? "（远程）" : ""}`
+                        : resolvedActiveBranch
+                    : triggerLabel
+                }
+                variant="cap-aligned"
+                className="w-full"
+              />
             </ComposerContextLabel>
           </ComboboxTrigger>
         </span>
@@ -748,7 +778,12 @@ export function BranchToolbarBranchSelector({
             status={displayedPrStatus}
             project={activeProject}
             label={panelPrLabel}
-            openAriaLabel={prUrl ?? `Open ${sourceControlPresentation.terminology.singular}`}
+            openAriaLabel={
+              prUrl ??
+              t("coreResidual.open", {
+                type: translate(sourceControlPresentation.terminology.singular),
+              })
+            }
             onOpen={(event) => openPrLink(event, prUrl)}
             onActed={() => branchStatusQuery.refresh()}
           />
