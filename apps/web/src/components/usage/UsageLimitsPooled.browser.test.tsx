@@ -5,9 +5,11 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
+import { GTProvider } from "gt-react";
 import { describe, expect, it } from "vite-plus/test";
 
 import { render } from "../../../test/render";
+import zh from "../../i18n/translations/zh.json";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 
 const checkedAt = "2026-10-25T16:00:00.000Z";
@@ -62,4 +64,41 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
       .element(screen.getByText("View usage in ChatGPT with your connected account."))
       .toBeVisible();
   });
+});
+
+it("localizes built-in window labels and preserves provider-specific labels", async () => {
+  const provider = {
+    ...managedChatGpt("codex", "Codex"),
+    usageLimits: {
+      checkedAt,
+      windows: [
+        { id: "primary", kind: "session", label: "Session", usedPercent: 26 },
+        { id: "secondary", kind: "weekly", label: "Weekly · Test Model", usedPercent: 38 },
+        { id: "custom", kind: "other", label: "Custom API limit", usedPercent: 10 },
+      ],
+    },
+  } satisfies ServerProvider;
+  const presentations = new Map([
+    [
+      EnvironmentId.make("desk"),
+      { entry: { target: { label: "Desk" } }, serverConfig: { providers: [provider] } },
+    ],
+  ]);
+  await using screen = await render(
+    <GTProvider
+      locale="zh"
+      translations={{
+        zh: {
+          "35934ab67a435d71": zh["35934ab67a435d71"],
+          "4633d5b11e248ed6": zh["4633d5b11e248ed6"],
+        },
+      }}
+    >
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />
+    </GTProvider>,
+  );
+
+  await expect.element(screen.getByText("短期用量", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("每周用量 · Test Model", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("Custom API limit", { exact: true })).toBeVisible();
 });
