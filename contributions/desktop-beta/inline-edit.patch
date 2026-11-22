@@ -1,0 +1,2515 @@
+diff --git a/apps/web/src/components/ChatView.browser.test.tsx b/apps/web/src/components/ChatView.browser.test.tsx
+index 96a870efeb9eaee14d68876b4e7173dfa5584a75..e22834afbc12126a270dec087067c0f6fa0aba0b 100644
+--- a/apps/web/src/components/ChatView.browser.test.tsx
++++ b/apps/web/src/components/ChatView.browser.test.tsx
+@@ -1,8 +1,16 @@
+ import { createMemoryHistory } from "@tanstack/react-router";
+ import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+ import {
++  CheckpointId,
++  CheckpointRef,
++  CheckpointScopeId,
+   EnvironmentId,
+   IssueTrackerKind,
++  NodeId,
++  ProviderDriverKind,
++  ProviderSessionId,
++  ProviderThreadId,
++  TurnItemId,
+   ORCHESTRATION_V2_WS_METHODS,
+   RunId,
+   ThreadId,
+@@ -10,6 +18,8 @@ import {
+   type IssueDetail,
+   type IssueRef,
+   type ThreadIssueLink,
++  type OrchestrationV2TurnItem,
++  type OrchestrationV2ProviderThread,
+ } from "@t3tools/contracts";
+ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+ import {
+@@ -50,6 +60,7 @@ import {
+   threadWithHistory,
+   threadWithQuestion,
+   type FakeDriver,
++  type FakeThread,
+ } from "../../test/fakeEnvironment";
+ import { act, fakeTimers, render } from "../../test/render";
+ 
+@@ -561,6 +572,228 @@ it("a stashed prompt ending in a file chip restores with the chip", async () =>
+   await expect.element(chip).toBeVisible();
+ });
+ 
++it.each(["plain", "keep", "restore"] as const)(
++  "edits and resends a past message in place (%s)",
++  async (mode) => {
++    const history = threadWithHistory(`inline-edit-${mode}`, 2);
++    const first = history.items.find((item) => item.type === "user_message")!;
++    const attachment = {
++      type: "file" as const,
++      id: "inline_edit_file",
++      name: "sample.txt",
++      mimeType: "text/plain",
++      sizeBytes: 16,
++    };
++    const provider: OrchestrationV2ProviderThread = {
++      id: ProviderThreadId.make("edit-provider"),
++      driver: ProviderDriverKind.make("codex"),
++      providerInstanceId: history.runs[0]!.providerInstanceId,
++      providerSessionId: ProviderSessionId.make("edit-session"),
++      appThreadId: history.id,
++      ownerNodeId: null,
++      nativeThreadRef: null,
++      nativeConversationHeadRef: null,
++      status: "idle",
++      firstRunOrdinal: 1,
++      lastRunOrdinal: 2,
++      handoffIds: [],
++      forkedFrom: null,
++      createdAt: first.updatedAt,
++      updatedAt: first.updatedAt,
++    };
++    const laterRun = history.runs[1]!;
++    const activity = {
++      ...first,
++      id: TurnItemId.make("edit-later-activity"),
++      runId: laterRun.id,
++      ordinal: 4,
++    };
++    const extra: OrchestrationV2TurnItem =
++      mode === "restore"
++        ? { ...activity, type: "file_change", fileName: "sample.ts", additions: 1 }
++        : { ...activity, type: "file_search", pattern: "*.ts" };
++    const before = {
++      id: CheckpointId.make("edit-thread-start"),
++      threadId: history.id,
++      scopeId: CheckpointScopeId.make("edit-scope"),
++      runId: null,
++      nodeId: NodeId.make("edit-node"),
++      parentCheckpointId: null,
++      ordinalWithinScope: 0,
++      appRunOrdinal: null,
++      ref: CheckpointRef.make("edit-ref"),
++      status: "ready" as const,
++      files: [],
++      capturedAt: first.updatedAt,
++    };
++    const thread: FakeThread = {
++      ...history,
++      providerThreads: [provider],
++      checkpoints:
++        mode === "keep"
++          ? [
++              before,
++              {
++                ...before,
++                id: CheckpointId.make("edit-later-checkpoint"),
++                parentCheckpointId: before.id,
++                runId: laterRun.id,
++                ordinalWithinScope: 2,
++                appRunOrdinal: 2,
++                filesTotal: { count: 1, additions: 0, deletions: 0 },
++              },
++            ]
++          : [before],
++      ...(mode === "restore" ? { worktreePath: "/workspace/inline-edit" } : {}),
++      items: [
++        { ...first, text: "First line\nSecond line", attachments: [attachment] },
++        ...history.items.slice(1),
++        extra,
++      ],
++    };
++    let sends = 0;
++    using _environment = installFakeEnvironment([thread], {
++      acceptCommands: true,
++      holdCommand: (command) =>
++        command.type === "message.dispatch" && mode === "plain" && ++sends === 1,
++    });
++    __setClientSettingsForTests({
++      ...DEFAULT_CLIENT_SETTINGS,
++      onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
++    });
++    const router = getRouter(
++      createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
++    );
++    await router.load();
++    await using _app = await render(<AppRoot router={router} />, { router: false });
++    const bottom = page.getByTestId("composer-editor");
++    await userEvent.click(bottom);
++    await insertText("Keep this unfinished draft");
++    const pencil = page.getByRole("button", { name: "Edit from here", exact: true });
++    const textarea = page.getByRole("textbox", { name: "Edit message" });
++    const dialog = page.getByRole("alertdialog", {
++      name: "How should file changes be handled before resending?",
++    });
++    await userEvent.click(pencil);
++    await expect.element(textarea).toHaveFocus();
++    if (mode === "plain") {
++      const style = document.createElement("style");
++      style.textContent = stylesheet;
++      document.head.append(style);
++      const root = document.documentElement;
++      const dark = root.classList.contains("dark");
++      try {
++        const input = textarea.element() as HTMLTextAreaElement;
++        for (const night of [false, true]) {
++          root.classList.toggle("dark", night);
++          input.focus();
++          expect(getComputedStyle(input.closest("form")!).boxShadow).toBe("none");
++          await userEvent.keyboard("{Tab}");
++          expect(document.activeElement?.textContent).toBe("Cancel");
++          await userEvent.keyboard("{Tab}");
++          expect(document.activeElement?.textContent).toBe("Send");
++        }
++        input.focus();
++      } finally {
++        root.classList.toggle("dark", dark);
++        style.remove();
++      }
++    }
++
++    await expect.element(textarea).toHaveValue("First line\nSecond line");
++    expect((textarea.element() as HTMLTextAreaElement).selectionStart).toBe(
++      "First line\nSecond line".length,
++    );
++    await expect.element(dialog).not.toBeInTheDocument();
++    await userEvent.keyboard("{Escape}");
++    await expect.element(textarea).not.toBeInTheDocument();
++    await expect.element(pencil).toHaveFocus();
++    await userEvent.click(pencil);
++    await textarea.fill("Edited first line\nEdited second line");
++    textarea.element().dispatchEvent(
++      new KeyboardEvent("keydown", {
++        key: "Enter",
++        isComposing: true,
++        bubbles: true,
++        cancelable: true,
++      }),
++    );
++    expect(dispatchedCommands().filter(({ type }) => type !== "thread.visit")).toHaveLength(0);
++    await userEvent.keyboard("{Enter}");
++
++    if (mode === "plain") {
++      await expect.element(dialog).not.toBeInTheDocument();
++    } else {
++      await expect.element(dialog).toBeVisible();
++      expect(dispatchedCommands().filter(({ type }) => type !== "thread.visit")).toHaveLength(0);
++      await userEvent.keyboard("{Escape}");
++      await expect.element(dialog).not.toBeInTheDocument();
++      await expect.element(textarea).toHaveFocus();
++      await expect.element(textarea).toHaveValue("Edited first line\nEdited second line");
++      await userEvent.click(
++        page
++          .getByRole("form", { name: "Edit message" })
++          .getByRole("button", { name: "Send", exact: true }),
++      );
++      if (mode === "keep") {
++        await expect
++          .element(dialog.getByRole("button", { name: "Restore files and send" }))
++          .not.toBeInTheDocument();
++      }
++      const confirm = dialog.getByRole("button", {
++        name: mode === "restore" ? "Restore files and send" : "Keep files and send",
++      });
++      await expect.element(confirm).toBeVisible();
++      (confirm.element() as HTMLButtonElement).focus();
++      await userEvent.keyboard("{Enter}");
++    }
++
++    const rewinds = () =>
++      dispatchedCommands().filter((command) => command.type === "checkpoint.rollback");
++    const resends = () =>
++      dispatchedCommands().filter((command) => command.type === "message.dispatch");
++    await vi.waitFor(() => expect(rewinds()).toHaveLength(1));
++    expect(rewinds()[0]).toMatchObject({ restoreFiles: mode === "restore" });
++    expect(resends()).toHaveLength(0);
++    await emitThreadEvent(thread.id, {
++      type: "provider-thread.updated",
++      payload: { ...provider, lastRunOrdinal: null },
++    });
++    for (const run of thread.runs) {
++      await emitThreadEvent(thread.id, {
++        type: "run.updated",
++        payload: { ...run, status: "rolled_back" },
++      });
++    }
++    await vi.waitFor(() => expect(resends()).toHaveLength(1));
++    expect(resends()[0]).toMatchObject({
++      threadId: thread.id,
++      text: "Edited first line\nEdited second line",
++      attachments: [attachment],
++    });
++
++    if (mode === "plain") {
++      await rejectPendingCommand("Test resend failed.");
++      await expect.element(page.getByText("Test resend failed.", { exact: true })).toBeVisible();
++      await expect.element(textarea).toHaveValue("Edited first line\nEdited second line");
++      await userEvent.click(
++        page
++          .getByRole("form", { name: "Edit message" })
++          .getByRole("button", { name: "Send", exact: true }),
++      );
++      await vi.waitFor(() => expect(resends()).toHaveLength(2));
++      expect(resends()[1]).toMatchObject({
++        commandId: resends()[0]!.commandId,
++        messageId: resends()[0]!.messageId,
++      });
++      expect(rewinds()).toHaveLength(1);
++    }
++    await expect.element(textarea).not.toBeInTheDocument();
++    await expect.element(bottom).toHaveTextContent("Keep this unfinished draft");
++  },
++  30_000,
++);
++
+ it("a rejected send leaves the timeline when a new draft was typed meanwhile", async () => {
+   const thread = threadWithHistory("rejected-send", 1);
+   using _environment = installFakeEnvironment([thread], {
+diff --git a/apps/web/src/components/ChatView.logic.test.ts b/apps/web/src/components/ChatView.logic.test.ts
+index 298a7c9b44f015fd11d339970e27752c6150460f..95f0e78b779d2ae4fee763f880a1ba62899c5c0b 100644
+--- a/apps/web/src/components/ChatView.logic.test.ts
++++ b/apps/web/src/components/ChatView.logic.test.ts
+@@ -1,13 +1,4 @@
+-import { rewindToMessage } from "./chat/chatViewSend";
+-import * as session from "../state/session";
+ import {
+-  environmentContextRecord,
+-  environmentContextReference,
+-  threadContextReference,
+-} from "../lib/composerContextRecords";
+-import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
+-import {
+-  prepareRevertedMessageAttachments,
+   boundAttachmentIds,
+   buildExpiredTerminalContextToastCopy,
+   mergeDirectPreviewAnnotation,
+@@ -50,12 +41,11 @@ import {
+ import * as DateTime from "effect/DateTime";
+ import * as Option from "effect/Option";
+ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+-import { AsyncResult, Atom } from "effect/reactivity";
++import { Atom } from "effect/reactivity";
+ import { appAtomRegistry } from "../rpc/atomRegistry";
+ import { environmentThreadDetails } from "../state/threads";
+ 
+ import type { Thread } from "../types";
+-import { DraftId, hydrateImagesFromPersisted, useComposerDraftStore } from "../composerDraftStore";
+ import { derivePhase } from "../session-logic";
+ import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
+ import {
+@@ -918,75 +908,6 @@ describe("waitForRevertedMessage", () => {
+ 
+   afterEach(() => vi.restoreAllMocks());
+ 
+-  it("restores the rewound message's thread and machine mentions beside the existing draft", async () => {
+-    const { state, projection } = projectionAtom();
+-    vi.spyOn(session, "readPreparedConnection").mockReturnValue({
+-      httpBaseUrl: "http://localhost",
+-    } as never);
+-    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+-    const thread = (id: string, title: string) =>
+-      threadContextRecord(
+-        { environmentId: threadRef.environmentId, threadId: ThreadId.make(id) },
+-        title,
+-      );
+-    const drafted = thread("drafted-thread", "Drafted thread");
+-    const mentioned = thread("referenced-thread", "Other thread");
+-    const machine = environmentContextRecord(EnvironmentId.make("env-2"), "Build box");
+-    useComposerDraftStore.getState().addThreadContexts(threadRef, [drafted]);
+-    const draftPrompt = useComposerDraftStore.getState().getComposerDraft(threadRef)!.prompt;
+-    const sentPrompt = ensureInlineContextReferences("Review", [
+-      threadContextReference(mentioned),
+-      environmentContextReference(machine),
+-    ]).trim();
+-
+-    const result = await rewindToMessage({
+-      message: {
+-        id: messageId,
+-        role: "user",
+-        runId: projection.messages[0]!.runId,
+-        streaming: false,
+-        createdAt: "2026-03-29T00:00:10.000Z",
+-        updatedAt: "2026-03-29T00:00:10.000Z",
+-        text: sentPrompt,
+-        context: { version: 1, records: [mentioned, machine] },
+-      },
+-      environmentId: threadRef.environmentId,
+-      routeThreadRef: threadRef,
+-      threadId: threadRef.threadId,
+-      turnCount: 1,
+-      restoreFiles: false,
+-      checkpoint: undefined,
+-      draftTarget: threadRef,
+-      composerHasPendingAttachments: false,
+-      createAssetUrl: async () => {
+-        throw new Error("No attachment expected");
+-      },
+-      revertThreadCheckpoint: async () => {
+-        appAtomRegistry.set(state, {
+-          data: Option.some({
+-            ...projection,
+-            providerThreads: projection.providerThreads.map((providerThread) => ({
+-              ...providerThread,
+-              lastRunOrdinal: 1,
+-            })),
+-            runs: projection.runs.map((run) =>
+-              run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
+-            ),
+-          }),
+-        });
+-        return AsyncResult.success(undefined);
+-      },
+-    });
+-
+-    const prompt = `${draftPrompt}\n\n${sentPrompt}`;
+-    expect(result).toEqual({ error: null, prompt });
+-    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)).toMatchObject({
+-      prompt,
+-      threadContexts: [drafted, mentioned],
+-      environmentContexts: [machine],
+-    });
+-  });
+-
+   it("rejects with the projected reason when the rollback fails for good", async () => {
+     const { state, projection } = projectionAtom();
+     const waiting = waitForRevertedMessage(threadRef, 1, requestId, async () => {});
+@@ -1587,61 +1508,6 @@ describe("deriveThreadPendingBackgroundTasks", () => {
+   });
+ });
+ 
+-describe("prepareRevertedMessageAttachments", () => {
+-  it("suppresses a repeated image after restoring a rewound message", async () => {
+-    using _fetch = vi
+-      .spyOn(globalThis, "fetch")
+-      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+-    const [file] = await prepareRevertedMessageAttachments({
+-      message: {
+-        id: MessageId.make("rewound"),
+-        role: "user",
+-        text: "",
+-        runId: null,
+-        streaming: false,
+-        createdAt: now,
+-        updatedAt: now,
+-        attachments: [
+-          { type: "image", id: "restored", name: "image.png", mimeType: "image/png", sizeBytes: 3 },
+-        ],
+-      },
+-      environmentId: EnvironmentId.make("rewind-images"),
+-      httpBaseUrl: "http://localhost",
+-      createAssetUrl: async () =>
+-        AsyncResult.success({ relativeUrl: "/attachment/image.png", expiresAt: 0 }),
+-    });
+-    const target = DraftId.make("rewind-image-repeat");
+-    const store = useComposerDraftStore.getState();
+-    using _draft = { [Symbol.dispose]: () => store.clearComposerContent(target) };
+-    store.addImages(
+-      target,
+-      [
+-        {
+-          type: "image",
+-          id: "restored",
+-          name: file!.name,
+-          mimeType: file!.type,
+-          sizeBytes: file!.size,
+-          file: file!,
+-          previewUrl: "data:image/png;base64,AQID",
+-        },
+-      ],
+-      { allowDuplicates: true },
+-    );
+-    const repeat = hydrateImagesFromPersisted([
+-      {
+-        id: "repeat",
+-        name: "image.png",
+-        mimeType: "image/png",
+-        sizeBytes: 3,
+-        dataUrl: "data:image/png;base64,AQID",
+-      },
+-    ]);
+-    expect(store.addImages(target, repeat)).toEqual([]);
+-    expect(store.getComposerDraft(target)?.images.map(({ id }) => id)).toEqual(["restored"]);
+-  });
+-});
+-
+ describe("threadErrorIsServerRuntime", () => {
+   it("is true for a server thread's runtime error, and for a local copy of that same error", () => {
+     expect(
+diff --git a/apps/web/src/components/ChatView.logic.ts b/apps/web/src/components/ChatView.logic.ts
+index 1f8bb8e10043ce6547327029c940325ed12d9941..5af724b97aecceab7edabf61e12763bbc2f1e03a 100644
+--- a/apps/web/src/components/ChatView.logic.ts
++++ b/apps/web/src/components/ChatView.logic.ts
+@@ -54,7 +54,6 @@ import {
+   squashAtomCommandFailure,
+   type AtomCommandResult,
+ } from "@t3tools/client-runtime/state/runtime";
+-import { readComposerImageBytes } from "./chat/composerAttachmentFiles";
+ import { videoMimeType } from "@t3tools/shared/video";
+ import {
+   appendCodexArtifactTemplateUsePrompt,
+@@ -645,44 +644,6 @@ export async function resolveFileAttachmentUrl(input: {
+   return url;
+ }
+ 
+-export async function prepareRevertedMessageAttachments(input: {
+-  message: ChatMessage;
+-  environmentId: EnvironmentId;
+-  httpBaseUrl: string;
+-  createAssetUrl: Parameters<typeof resolveFileAttachmentUrl>[0]["createAssetUrl"];
+-}): Promise<File[]> {
+-  return Promise.all(
+-    (input.message.attachments ?? []).map(async (attachment) => {
+-      if (attachment.type !== "image" && attachment.type !== "file") {
+-        throw new Error(m(msg("This message has an attachment that cannot be restored.")));
+-      }
+-      const result = await input.createAssetUrl({
+-        environmentId: input.environmentId,
+-        input: {
+-          resource: {
+-            _tag: "attachment",
+-            attachmentId: attachment.id,
+-            fileName: attachment.name,
+-            mimeType: attachment.mimeType,
+-          },
+-        },
+-      });
+-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+-      const url = resolveAssetUrl(input.httpBaseUrl, result.value.relativeUrl);
+-      if (url === null)
+-        throw new Error(m(msg("The environment returned an invalid attachment URL.")));
+-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+-      if (!response.ok)
+-        throw new Error(m(msg("Could not restore attachment: {name}", { name: attachment.name })));
+-      const file = new File([await response.blob()], attachment.name, {
+-        type: attachment.mimeType,
+-      });
+-      if (attachment.type === "image") await readComposerImageBytes(file);
+-      return file;
+-    }),
+-  );
+-}
+-
+ export function timelineHasEphemeralPreviewUrls(
+   entries: ReadonlyArray<Pick<TimelineEntry, "kind"> & { message?: ChatMessage }>,
+ ): boolean {
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+index 128f3b16d1ddeb1e82ddf85e2e6eea82036eb494..586fdd2a5c4e1c725f320f1c3369de18698db43f 100644
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -32,6 +32,11 @@ import {
+   reconcileOptimisticUserMessages,
+ } from "./chat/optimisticUserMessages";
+ import { useTimelineRewind } from "./chat/useTimelineRewind";
++import {
++  TimelineFileChangesDialog,
++  TimelineMessageEditContext,
++  TimelineMessageEditor,
++} from "./chat/TimelineMessageEditor";
+ import { useThreadLifecycle } from "./chat/useThreadLifecycle";
+ import { useRightPanelActions } from "./chat/useRightPanelActions";
+ import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
+@@ -297,7 +302,6 @@ import {
+   DeviceSetupDialogHost,
+   openBranchRestoreConfirm,
+   PullRequestThreadDialogHost,
+-  RevertConfirmHost,
+ } from "./chat/ChatOverlayHosts";
+ import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
+ import { useCitedHistory } from "./chat/citationProcedure";
+@@ -2914,26 +2918,22 @@ export default function ChatView(props: ChatViewProps) {
+                 : null;
+   const openSideChatStable = useStableCallback(() => void sideChat.open());
+   const sendSideChatStable = useStableCallback(sideChat.open);
+-  const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
+-    useTimelineRewind({
+-      environmentId,
+-      routeThreadRef,
+-      routeThreadKey,
+-      currentRouteThreadKeyRef,
+-      serverProjection,
+-      activeThread,
+-      timelineMessages,
+-      phase,
+-      isSendBusy,
+-      isRevertingCheckpoint,
+-      supportsConversationRollback,
+-      activeEnvironmentUnavailable,
+-      activeEnvironmentUnavailableLabel,
+-      promptRef,
+-      composerRef,
+-      composerDraftTarget,
+-      setThreadError,
+-    });
++  const { editControls, onForkFromRunStable, onRevertTimelineTurnStable } = useTimelineRewind({
++    environmentId,
++    routeThreadRef,
++    routeThreadKey,
++    serverProjection,
++    activeThread,
++    timelineMessages,
++    phase,
++    isSendBusy,
++    isRevertingCheckpoint,
++    supportsConversationRollback,
++    activeEnvironmentUnavailable,
++    activeEnvironmentUnavailableLabel,
++    keybindings,
++    setThreadError,
++  });
+   const onCompactContext = () => {
+     if (compactDisabled) return;
+     void sendStandaloneCommand("/compact", gt("Failed to compact context."));
+@@ -3210,13 +3210,24 @@ export default function ChatView(props: ChatViewProps) {
+       .join(" · ") || null;
+   // The end of the timeline holds the thread's present and next turns: what it is doing now,
+   // its lifecycle status, guest messages awaiting you, then your queued messages.
++  const orphanedEdit =
++    editControls !== null &&
++    !timelineMessages.some((message) => message.id === editControls.edit.message.id)
++      ? editControls.edit.message.id
++      : null;
+   const timelineFooter =
++    orphanedEdit === null &&
+     pendingHandoff === null &&
+     !hasThreadNow &&
+     threadStatusLine === null &&
+     pendingGuestMessageCount === 0 &&
+     !hasQueuedTurns ? null : (
+       <>
++        {orphanedEdit === null ? null : (
++          <div className="chat-content-lane">
++            <TimelineMessageEditor messageId={orphanedEdit} />
++          </div>
++        )}
+         {pendingHandoff === null ? null : (
+           <div className="chat-content-lane">
+             <HandoffRow
+@@ -3500,110 +3511,115 @@ export default function ChatView(props: ChatViewProps) {
+               className="relative flex min-h-0 flex-1 flex-col bg-background"
+             >
+               <WorkspaceMutationIdContext value={workspaceMutationId}>
+-                <ThreadTimeline
+-                  pendingApprovals={pendingApprovals}
+-                  heldApprovalRequestIds={heldApprovalRequestIds}
+-                  respondingRequestIds={respondingRequestIds}
+-                  onRespondToApproval={onRespondToApprovalStable}
+-                  canOperateThread={canOperateThread}
+-                  threadDetailRef={routeThreadDetailRef}
+-                  entriesInput={timelineEntriesInput}
+-                  draftEntries={isServerThread ? null : draftTimelineEntries}
+-                  activeThreadKey={activeThreadKey}
+-                  syncing={threadSyncPhase !== null}
+-                  detailLoading={threadDetailLoading}
+-                  citationRequest={citationRequest}
+-                  citationHistory={citationHistory}
+-                  onCiteAssistantText={citeAssistantTextStable}
+-                  onReplyToResponse={replyToResponseStable}
+-                  {...(activeProject
+-                    ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
+-                    : {})}
+-                  isWorking={isWorking}
+-                  runlessWorkActive={runlessWorkStartedAt !== null}
+-                  isCompacting={isCompacting}
+-                  awaitingUser={
+-                    activePendingApproval !== null
+-                      ? "approval"
+-                      : activePendingUserInput !== null ||
+-                          // A secret request has no runtime request; the shell carries it.
+-                          activeThreadShell?.hasPendingUserInput === true
+-                        ? "input"
++                <TimelineMessageEditContext value={editControls}>
++                  <ThreadTimeline
++                    pendingApprovals={pendingApprovals}
++                    heldApprovalRequestIds={heldApprovalRequestIds}
++                    respondingRequestIds={respondingRequestIds}
++                    onRespondToApproval={onRespondToApprovalStable}
++                    canOperateThread={canOperateThread}
++                    threadDetailRef={routeThreadDetailRef}
++                    entriesInput={timelineEntriesInput}
++                    draftEntries={isServerThread ? null : draftTimelineEntries}
++                    activeThreadKey={activeThreadKey}
++                    syncing={threadSyncPhase !== null}
++                    detailLoading={threadDetailLoading}
++                    citationRequest={citationRequest}
++                    citationHistory={citationHistory}
++                    onCiteAssistantText={citeAssistantTextStable}
++                    onReplyToResponse={replyToResponseStable}
++                    {...(activeProject
++                      ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
++                      : {})}
++                    isWorking={isWorking}
++                    runlessWorkActive={runlessWorkStartedAt !== null}
++                    isCompacting={isCompacting}
++                    awaitingUser={
++                      activePendingApproval !== null
++                        ? "approval"
++                        : activePendingUserInput !== null ||
++                            // A secret request has no runtime request; the shell carries it.
++                            activeThreadShell?.hasPendingUserInput === true
++                          ? "input"
++                          : null
++                    }
++                    awaitingRequestId={
++                      activePendingApproval?.requestId ?? activePendingUserInput?.requestId ?? null
++                    }
++                    activeTurnStartedAt={activeWorkStartedAt}
++                    providerStartingLabel={
++                      activeActivityRun?.providerStartingLabelMsg
++                        ? messages(activeActivityRun.providerStartingLabelMsg)
+                         : null
+-                  }
+-                  awaitingRequestId={
+-                    activePendingApproval?.requestId ?? activePendingUserInput?.requestId ?? null
+-                  }
+-                  activeTurnStartedAt={activeWorkStartedAt}
+-                  providerStartingLabel={
+-                    activeActivityRun?.providerStartingLabelMsg
+-                      ? messages(activeActivityRun.providerStartingLabelMsg)
+-                      : null
+-                  }
+-                  worktreeSetup={worktreeSetup}
+-                  onCancelWorktreeSetup={onCancelWorktreeSetupStable}
+-                  retryableWorkspacePreparationRunIds={retryableWorkspacePreparationRunIds}
+-                  onRetryWorkspacePreparation={onRetryWorkspacePreparationStable}
+-                  {...(draftId
+-                    ? { onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocallyStable }
+-                    : {})}
+-                  {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
+-                  isPreparingWorktree={isPreparingWorktree}
+-                  footer={timelineFooter}
+-                  listRef={legendListRef}
+-                  runs={serverProjection?.runs ?? []}
+-                  latestRun={activeActivityRun}
+-                  announcedRun={announcedRun(activeActivityRun, serverProjection?.runs ?? [])}
+-                  detailBehindShell={isDetailBehindShell(
+-                    activeLatestRun,
+-                    activeThreadShell?.latestRun ?? null,
+-                  )}
+-                  runningRunId={activeRunningTurnId}
+-                  turnDiffSummaries={turnDiffSummaries}
+-                  activeThreadEnvironmentId={
+-                    displayedThreadRef?.environmentId ?? activeThread.environmentId
+-                  }
+-                  routeThreadKey={displayedTimelineKey}
+-                  displayThreadKey={displayedTimelineKey}
+-                  announceTurnStatus={!isProviderSubagent}
+-                  onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
+-                  // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
+-                  {...(embedded
+-                    ? {}
+-                    : { onOpenTurnDiff: onOpenTurnDiffStable, onForkFromRun: onForkFromRunStable })}
+-                  onOpenThread={onOpenRelatedThreadStable}
+-                  parentThreadLink={parentThreadLink}
+-                  workflowOpening={workflowOpening}
+-                  supportsConversationRollback={supportsConversationRollback}
+-                  threadStartCheckpointAvailable={threadStartCheckpointAvailable}
+-                  availableRevertTurnCounts={availableRevertTurnCounts}
+-                  onRevertToTurnCount={onRevertTimelineTurnStable}
+-                  onUseArtifactTemplate={insertArtifactTemplateStable}
+-                  onSendAppMessage={sendAppMessageStable}
+-                  isRevertingCheckpoint={isRevertingCheckpoint}
+-                  onImageExpand={onExpandTimelineImageStable}
+-                  onFileOpen={openFileAttachmentStable}
+-                  onFileDownload={downloadFileAttachmentStable}
+-                  markdownCwd={gitCwd ?? undefined}
+-                  resolvedTheme={resolvedTheme}
+-                  timestampFormat={timestampFormat}
+-                  workspaceRoot={activeWorkspaceRoot}
+-                  skills={timelineSkills}
+-                  anchorMessageId={timelineAnchorMessageId}
+-                  onAnchorReady={onTimelineAnchorReadyStable}
+-                  onAnchorSizeChanged={onTimelineAnchorSizeChangedStable}
+-                  contentInsetEndAdjustment={composerTimelineInset}
+-                  liveFollowEnabled={timelineLiveFollowEnabled}
+-                  onIsAtEndChange={onIsAtEndChangeStable}
+-                  onViewportAttach={attachTimelineViewport}
+-                  onFooterGrow={onTimelineFooterGrowStable}
+-                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+-                  emptyPlaceholderInset={composerReservedHeight}
+-                  topFadeEnabled={!hasTimelineTopBanner}
+-                  {...(threadHistoryControls === undefined
+-                    ? {}
+-                    : { historyControls: threadHistoryControls })}
+-                />
++                    }
++                    worktreeSetup={worktreeSetup}
++                    onCancelWorktreeSetup={onCancelWorktreeSetupStable}
++                    retryableWorkspacePreparationRunIds={retryableWorkspacePreparationRunIds}
++                    onRetryWorkspacePreparation={onRetryWorkspacePreparationStable}
++                    {...(draftId
++                      ? { onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocallyStable }
++                      : {})}
++                    {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
++                    isPreparingWorktree={isPreparingWorktree}
++                    footer={timelineFooter}
++                    listRef={legendListRef}
++                    runs={serverProjection?.runs ?? []}
++                    latestRun={activeActivityRun}
++                    announcedRun={announcedRun(activeActivityRun, serverProjection?.runs ?? [])}
++                    detailBehindShell={isDetailBehindShell(
++                      activeLatestRun,
++                      activeThreadShell?.latestRun ?? null,
++                    )}
++                    runningRunId={activeRunningTurnId}
++                    turnDiffSummaries={turnDiffSummaries}
++                    activeThreadEnvironmentId={
++                      displayedThreadRef?.environmentId ?? activeThread.environmentId
++                    }
++                    routeThreadKey={displayedTimelineKey}
++                    displayThreadKey={displayedTimelineKey}
++                    announceTurnStatus={!isProviderSubagent}
++                    onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
++                    // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
++                    {...(embedded
++                      ? {}
++                      : {
++                          onOpenTurnDiff: onOpenTurnDiffStable,
++                          onForkFromRun: onForkFromRunStable,
++                        })}
++                    onOpenThread={onOpenRelatedThreadStable}
++                    parentThreadLink={parentThreadLink}
++                    workflowOpening={workflowOpening}
++                    supportsConversationRollback={supportsConversationRollback}
++                    threadStartCheckpointAvailable={threadStartCheckpointAvailable}
++                    availableRevertTurnCounts={availableRevertTurnCounts}
++                    onRevertToTurnCount={onRevertTimelineTurnStable}
++                    onUseArtifactTemplate={insertArtifactTemplateStable}
++                    onSendAppMessage={sendAppMessageStable}
++                    isRevertingCheckpoint={isRevertingCheckpoint}
++                    onImageExpand={onExpandTimelineImageStable}
++                    onFileOpen={openFileAttachmentStable}
++                    onFileDownload={downloadFileAttachmentStable}
++                    markdownCwd={gitCwd ?? undefined}
++                    resolvedTheme={resolvedTheme}
++                    timestampFormat={timestampFormat}
++                    workspaceRoot={activeWorkspaceRoot}
++                    skills={timelineSkills}
++                    anchorMessageId={timelineAnchorMessageId}
++                    onAnchorReady={onTimelineAnchorReadyStable}
++                    onAnchorSizeChanged={onTimelineAnchorSizeChangedStable}
++                    contentInsetEndAdjustment={composerTimelineInset}
++                    liveFollowEnabled={timelineLiveFollowEnabled}
++                    onIsAtEndChange={onIsAtEndChangeStable}
++                    onViewportAttach={attachTimelineViewport}
++                    onFooterGrow={onTimelineFooterGrowStable}
++                    hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
++                    emptyPlaceholderInset={composerReservedHeight}
++                    topFadeEnabled={!hasTimelineTopBanner}
++                    {...(threadHistoryControls === undefined
++                      ? {}
++                      : { historyControls: threadHistoryControls })}
++                  />
++                </TimelineMessageEditContext>
+               </WorkspaceMutationIdContext>
+ 
+               {showScrollToBottom && !isThreadFindActive && (
+@@ -4123,12 +4139,7 @@ export default function ChatView(props: ChatViewProps) {
+         </ChatRightPanel>
+       ) : null}
+ 
+-      <RevertConfirmHost
+-        threadKey={routeThreadKey}
+-        checkpoints={serverProjection?.checkpoints}
+-        worktreePath={activeThread?.worktreePath ?? null}
+-        onConfirm={onConfirmRevertStable}
+-      />
++      {editControls === null ? null : <TimelineFileChangesDialog controls={editControls} />}
+       {embedded ? null : <LinkPullRequestDialogHost />}
+       <ThreadVisitWatermark threadRef={routeThreadRef} />
+       <ExpandedImageDialogHost threadKey={routeThreadKey} />
+diff --git a/apps/web/src/components/chat/ChatOverlayHosts.tsx b/apps/web/src/components/chat/ChatOverlayHosts.tsx
+index a5e386e467758c58db34b8a605ede57232a22ae2..37263ca158414294542f36954ade03d6e7be2569 100644
+--- a/apps/web/src/components/chat/ChatOverlayHosts.tsx
++++ b/apps/web/src/components/chat/ChatOverlayHosts.tsx
+@@ -1,8 +1,6 @@
+ import type {
+   DeviceServiceState,
+   EnvironmentId,
+-  MessageId,
+-  OrchestrationV2ThreadProjection,
+   ScopedThreadRef,
+   ThreadId,
+ } from "@t3tools/contracts";
+@@ -26,7 +24,6 @@ import {
+ import { Button } from "../ui/button";
+ import { Dialog } from "../ui/dialog";
+ import { WizardPopup } from "../ui/wizard";
+-import { findRevertCheckpoint } from "../../session-logic";
+ import { registerThreadOverlay } from "./threadOverlayRetention";
+ 
+ /**
+@@ -192,70 +189,3 @@ export function BranchRestoreConfirmHost(props: {
+     </AlertDialog>
+   );
+ }
+-
+-interface PendingRevert {
+-  readonly turnCount: number;
+-  readonly messageId: MessageId;
+-}
+-
+-const revertConfirmAtom = makeThreadOverlayAtom<PendingRevert>("revert-confirm");
+-
+-export function openRevertConfirm(threadKey: string, pending: PendingRevert): void {
+-  appAtomRegistry.set(revertConfirmAtom, { threadKey, value: pending });
+-}
+-
+-export function RevertConfirmHost(props: {
+-  readonly threadKey: string;
+-  readonly checkpoints: OrchestrationV2ThreadProjection["checkpoints"] | undefined;
+-  readonly worktreePath: string | null;
+-  readonly onConfirm: (turnCount: number, messageId: MessageId, restoreFiles: boolean) => void;
+-}) {
+-  const pending = useThreadOverlay(revertConfirmAtom, props.threadKey);
+-  // The server refuses file restore outside an isolated worktree.
+-  const canRestoreFiles =
+-    pending !== null &&
+-    props.worktreePath !== null &&
+-    findRevertCheckpoint(props.checkpoints ?? [], pending.turnCount)?.status === "ready";
+-  const confirm = (restoreFiles: boolean) => {
+-    if (pending === null || (restoreFiles && !canRestoreFiles)) return;
+-    closeThreadOverlay(revertConfirmAtom);
+-    props.onConfirm(pending.turnCount, pending.messageId, restoreFiles);
+-  };
+-  return (
+-    <AlertDialog
+-      open={pending !== null}
+-      onOpenChange={(open) => {
+-        if (!open) closeThreadOverlay(revertConfirmAtom);
+-      }}
+-    >
+-      <AlertDialogPopup>
+-        <AlertDialogHeader>
+-          <AlertDialogTitle>
+-            <T>Edit from here?</T>
+-          </AlertDialogTitle>
+-          <AlertDialogDescription>
+-            <T>
+-              Rewind chat to before this message. Your prompt and attachments return to the
+-              composer. “Revert files too” also undoes your own edits.
+-            </T>
+-          </AlertDialogDescription>
+-        </AlertDialogHeader>
+-        <AlertDialogFooter>
+-          <AlertDialogClose render={<Button variant="outline" />}>
+-            <T>Cancel</T>
+-          </AlertDialogClose>
+-          <Button
+-            variant="destructive-outline"
+-            disabled={!canRestoreFiles}
+-            onClick={() => confirm(true)}
+-          >
+-            <T>Revert files too</T>
+-          </Button>
+-          <Button onClick={() => confirm(false)}>
+-            <T>Revert and keep changes</T>
+-          </Button>
+-        </AlertDialogFooter>
+-      </AlertDialogPopup>
+-    </AlertDialog>
+-  );
+-}
+diff --git a/apps/web/src/components/chat/TimelineMessageEditor.tsx b/apps/web/src/components/chat/TimelineMessageEditor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0eff822691ddac5b268e55bcf80c55384bab4d4c
+--- /dev/null
++++ b/apps/web/src/components/chat/TimelineMessageEditor.tsx
+@@ -0,0 +1,166 @@
++import { createContext, use, useLayoutEffect, useRef, useState } from "react";
++import { T, useGT } from "gt-react";
++import type { MessageId } from "@t3tools/contracts";
++import { composerSubmissionIntentForKey } from "../../composer-logic";
++import { useClientSettings } from "../../hooks/useSettings";
++import { useSoftwareKeyboardOpen } from "../../hooks/useSoftwareKeyboardOpen";
++import { Button } from "../ui/button";
++import {
++  AlertDialog,
++  AlertDialogClose,
++  AlertDialogDescription,
++  AlertDialogFooter,
++  AlertDialogHeader,
++  AlertDialogPopup,
++  AlertDialogTitle,
++} from "../ui/alert-dialog";
++import type { useTimelineRewind } from "./useTimelineRewind";
++
++type EditControls = NonNullable<ReturnType<typeof useTimelineRewind>["editControls"]>;
++export const TimelineMessageEditContext = createContext<EditControls | null>(null);
++
++export function TimelineMessageEditor({ messageId }: { readonly messageId: MessageId }) {
++  const controls = use(TimelineMessageEditContext);
++  return controls?.edit.message.id === messageId ? (
++    <MessageEditor key={messageId} controls={controls} />
++  ) : null;
++}
++
++function MessageEditor({ controls }: { readonly controls: EditControls }) {
++  const { edit, keybindings, cancel, submit, editorRef } = controls;
++  const gt = useGT();
++  const sendShortcut = useClientSettings((settings) => settings.sendShortcut);
++  const softwareKeyboardOpen = useSoftwareKeyboardOpen();
++  const [prompt, setPrompt] = useState(edit.draft.prompt);
++  const initialFocus = useRef(true);
++  useLayoutEffect(() => {
++    const textarea = editorRef.current;
++    if (edit.stage === "editing" && initialFocus.current && textarea) {
++      initialFocus.current = false;
++      if (edit.error === null || document.activeElement === document.body) {
++        textarea.focus({ preventScroll: true });
++        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
++      }
++    }
++  }, [edit.stage, edit.error, editorRef]);
++
++  const busy = edit.stage === "sending";
++  const canSubmit = !busy && (prompt.trim() !== "" || (edit.message.attachments?.length ?? 0) > 0);
++  return (
++    <form
++      aria-label={gt("Edit message")}
++      aria-busy={busy}
++      className="ml-auto flex w-[80%] min-w-0 flex-col gap-2 rounded-2xl bg-message px-3.5 py-3 text-message-foreground"
++      onSubmit={(event) => {
++        event.preventDefault();
++        if (canSubmit) submit();
++      }}
++    >
++      <textarea
++        ref={editorRef}
++        aria-label={gt("Edit message")}
++        readOnly={busy}
++        value={prompt}
++        rows={1}
++        className="field-sizing-content max-h-[min(50dvh,24rem)] min-h-6 w-full resize-none bg-transparent text-base leading-relaxed outline-none sm:text-sm"
++        onChange={(event) => {
++          edit.draft.prompt = event.currentTarget.value;
++          setPrompt(edit.draft.prompt);
++        }}
++        onKeyDown={(event) => {
++          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
++          if (event.key === "Escape" && !busy) {
++            event.preventDefault();
++            event.stopPropagation();
++            cancel();
++          } else if (event.key === "Enter" && !event.shiftKey) {
++            const intent = composerSubmissionIntentForKey({
++              event,
++              keybindings,
++              context: {},
++              isSoftwareKeyboardOpen: softwareKeyboardOpen,
++              isDraftThread: false,
++              sendShortcut,
++              prompt,
++            });
++            if (intent !== "foreground") return;
++            event.preventDefault();
++            event.stopPropagation();
++            if (canSubmit) submit();
++          }
++        }}
++      />
++      {edit.message.attachments?.length ? (
++        <div className="flex min-w-0 flex-wrap gap-1.5 text-xs text-muted-foreground">
++          {edit.message.attachments.map((attachment) => (
++            <span
++              key={attachment.id}
++              className="max-w-full truncate rounded-md bg-background/50 px-1.5 py-0.5"
++              title={attachment.name}
++            >
++              {attachment.name}
++            </span>
++          ))}
++        </div>
++      ) : null}
++      {edit.error ? (
++        <p role="alert" className="text-sm text-destructive-foreground">
++          {edit.error}
++        </p>
++      ) : null}
++      <div className="flex items-center justify-end gap-1.5">
++        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={cancel}>
++          <T>Cancel</T>
++        </Button>
++        <Button type="submit" size="sm" disabled={!canSubmit}>
++          {busy ? <T>Sending…</T> : <T>Send</T>}
++        </Button>
++      </div>
++    </form>
++  );
++}
++
++export function TimelineFileChangesDialog({ controls }: { readonly controls: EditControls }) {
++  return (
++    <AlertDialog
++      open={controls.edit.stage === "confirming"}
++      onOpenChange={(open) => {
++        if (!open) controls.dismissConfirmation();
++      }}
++    >
++      <AlertDialogPopup finalFocus={controls.editorRef}>
++        <AlertDialogHeader>
++          <AlertDialogTitle>
++            <T>How should file changes be handled before resending?</T>
++          </AlertDialogTitle>
++          <AlertDialogDescription>
++            {controls.canRestoreFiles ? (
++              <T>
++                The conversation from this message onward will be replaced. Restoring files also
++                undoes your own changes since this message.
++              </T>
++            ) : (
++              <T>
++                The conversation from this message onward will be replaced. File restoration is
++                unavailable, so resending keeps the current files.
++              </T>
++            )}
++          </AlertDialogDescription>
++        </AlertDialogHeader>
++        <AlertDialogFooter variant="bare">
++          <AlertDialogClose render={<Button variant="ghost" />}>
++            <T>Cancel</T>
++          </AlertDialogClose>
++          {controls.canRestoreFiles ? (
++            <Button variant="ghost-destructive" onClick={() => controls.confirm(true)}>
++              <T>Restore files and send</T>
++            </Button>
++          ) : null}
++          <Button onClick={() => controls.confirm(false)}>
++            <T>Keep files and send</T>
++          </Button>
++        </AlertDialogFooter>
++      </AlertDialogPopup>
++    </AlertDialog>
++  );
++}
+diff --git a/apps/web/src/components/chat/TimelineUserMessageRow.tsx b/apps/web/src/components/chat/TimelineUserMessageRow.tsx
+index 6fc9ccc790e62dc27dd9ac5fd7dedc83e2cf4c3d..de1052c752b77840ab58cfaab54b5c2f3287686b 100644
+--- a/apps/web/src/components/chat/TimelineUserMessageRow.tsx
++++ b/apps/web/src/components/chat/TimelineUserMessageRow.tsx
+@@ -1,3 +1,4 @@
++import { TimelineMessageEditContext, TimelineMessageEditor } from "./TimelineMessageEditor";
+ import { copySnapshot as copySnapshotToClipboard } from "./copySnapshot";
+ import { InlineAudioPreview } from "../files/InlineAudioPreview";
+ import { filePreviewKind } from "@t3tools/shared/filePreview";
+@@ -284,6 +285,9 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
+ 
+ function UserMessageContent({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+   const ctx = use(TimelineRowCtx);
++  const edit = use(TimelineMessageEditContext);
++  if (edit?.edit.message.id === row.message.id)
++    return <TimelineMessageEditor messageId={row.message.id} />;
+   return ctx.workflowOpening?.messageId === row.message.id ? (
+     <WorkflowOpeningBlock
+       opening={ctx.workflowOpening}
+@@ -1184,6 +1188,7 @@ function RevertUserMessageButton({
+   const ctx = use(TimelineRowCtx);
+   const activity = use(TimelineRowActivityCtx);
+   const gt = useGT();
++  const edit = use(TimelineMessageEditContext);
+ 
+   return (
+     <Tooltip>
+@@ -1192,8 +1197,9 @@ function RevertUserMessageButton({
+           <Button
+             type="button"
+             size="xs"
+-            variant="ghost"
+-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
++            variant="ghost-muted"
++            data-edit-timeline-message={messageId}
++            disabled={activity.isRevertingCheckpoint || activity.isWorking || edit !== null}
+             onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
+             aria-label={gt("Edit from here")}
+           />
+diff --git a/apps/web/src/components/chat/chatViewSend.ts b/apps/web/src/components/chat/chatViewSend.ts
+index b78fc6a0b9562d1212675c52bb6ffe04c6388103..8d38a4115302efdf0d963a58477da392c9bae315 100644
+--- a/apps/web/src/components/chat/chatViewSend.ts
++++ b/apps/web/src/components/chat/chatViewSend.ts
+@@ -1,10 +1,8 @@
+ import {
+-  CommandId,
+   type EnvironmentId,
+   type ModelSelection,
+   type ScopedThreadRef,
+   type ThreadId,
+-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+ } from "@t3tools/contracts";
+ import {
+   wasBootstrapThreadDeleted,
+@@ -22,9 +20,6 @@ import {
+   getUploadedAttachments,
+   refreshExpiredAttachmentUploads,
+ } from "../../lib/attachmentUploadQueue";
+-import { findRevertCheckpoint } from "../../session-logic";
+-import { type ChatMessage } from "../../types";
+-import { randomUUID } from "~/lib/utils";
+ import { stackedThreadToast, toastManager } from "../ui/toast";
+ import { newThreadId } from "~/lib/utils";
+ import {
+@@ -44,11 +39,7 @@ import {
+   cloneComposerImageForRetry,
+   type ComposerSendSnapshot,
+   readFileAsDataUrl,
+-  prepareRevertedMessageAttachments,
+-  waitForRevertedMessage,
+ } from "../ChatView.logic";
+-import { readPreparedConnection } from "../../state/session";
+-import { recallComposerMessage } from "./composerPromptHistory";
+ 
+ // Kept per route so a send in flight, and the multiple-model selections, survive
+ // ChatView remounting while the user navigates.
+@@ -160,118 +151,6 @@ export async function startFanoutThread(input: {
+   }
+ }
+ 
+-/**
+- * Reverts the thread to before `message` and puts that message's text, mentions
+- * and attachments back in the composer draft. Returns the restored prompt, or the
+- * error to show; on error the draft is untouched.
+- */
+-export async function rewindToMessage(input: {
+-  readonly message: ChatMessage;
+-  readonly environmentId: EnvironmentId;
+-  readonly routeThreadRef: ScopedThreadRef;
+-  readonly threadId: ThreadId;
+-  readonly turnCount: number;
+-  readonly restoreFiles: boolean;
+-  readonly checkpoint: ReturnType<typeof findRevertCheckpoint>;
+-  readonly draftTarget: ScopedThreadRef | DraftId;
+-  readonly composerHasPendingAttachments: boolean;
+-  readonly createAssetUrl: Parameters<
+-    typeof prepareRevertedMessageAttachments
+-  >[0]["createAssetUrl"];
+-  readonly revertThreadCheckpoint: (value: {
+-    environmentId: EnvironmentId;
+-    input: {
+-      commandId: CommandId;
+-      threadId: ThreadId;
+-      turnCount: number;
+-      restoreFiles: boolean;
+-      checkpointId?: string;
+-      scopeId?: string;
+-    };
+-  }) => Promise<AtomCommandResult<unknown, unknown>>;
+-}): Promise<
+-  | { readonly error: string; readonly prompt?: never }
+-  | { readonly error: null; readonly prompt: string }
+-> {
+-  const { message, environmentId, draftTarget } = input;
+-  try {
+-    if (input.composerHasPendingAttachments) {
+-      throw new Error(m(msg("Wait for attachments to finish preparing before rewinding.")));
+-    }
+-    const connection = readPreparedConnection(environmentId);
+-    if (!connection) throw new Error(m(msg("The environment is not connected.")));
+-    const files = await prepareRevertedMessageAttachments({
+-      message,
+-      environmentId,
+-      httpBaseUrl: connection.httpBaseUrl,
+-      createAssetUrl: input.createAssetUrl,
+-    });
+-    const store = useComposerDraftStore.getState();
+-    const draft = store.getComposerDraft(draftTarget);
+-    if (
+-      (draft?.images.length ?? 0) + (draft?.files.length ?? 0) + files.length >
+-      PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+-    ) {
+-      throw new Error(
+-        m(msg("Make room for this message's attachments in the composer before rewinding.")),
+-      );
+-    }
+-    const commandId = CommandId.make(randomUUID());
+-    await waitForRevertedMessage(input.routeThreadRef, input.turnCount, commandId, async () => {
+-      const result = await input.revertThreadCheckpoint({
+-        environmentId,
+-        input: {
+-          commandId,
+-          threadId: input.threadId,
+-          turnCount: input.turnCount,
+-          restoreFiles: input.restoreFiles,
+-          ...(input.checkpoint === undefined
+-            ? {}
+-            : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
+-        },
+-      });
+-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+-    });
+-    const currentPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
+-    const { prompt: restoredPrompt, mentions } = recallComposerMessage(message);
+-    const nextPrompt =
+-      restoredPrompt.length === 0
+-        ? currentPrompt
+-        : currentPrompt.length > 0
+-          ? `${currentPrompt}\n\n${restoredPrompt}`
+-          : restoredPrompt;
+-    store.setPrompt(draftTarget, nextPrompt);
+-    // The restored prompt already carries the chips; these add only their records.
+-    store.addThreadContexts(draftTarget, mentions.threadContexts, { appendReference: false });
+-    store.addEnvironmentContexts(draftTarget, mentions.environmentContexts, {
+-      appendReference: false,
+-    });
+-    const images: ComposerImageAttachment[] = [];
+-    const restoredFiles: ComposerFileAttachment[] = [];
+-    files.forEach((file, index) => {
+-      const attachment = {
+-        id: randomUUID(),
+-        name: file.name,
+-        mimeType: file.type,
+-        sizeBytes: file.size,
+-        file,
+-      };
+-      if (message.attachments?.[index]?.type === "image") {
+-        images.push({ ...attachment, type: "image", previewUrl: URL.createObjectURL(file) });
+-      } else {
+-        restoredFiles.push({ ...attachment, type: "file" });
+-      }
+-    });
+-    store.addImages(draftTarget, images, { allowDuplicates: true });
+-    store.addFiles(draftTarget, restoredFiles, { allowDuplicates: true });
+-    return { error: null, prompt: nextPrompt };
+-  } catch (error) {
+-    return {
+-      error: error instanceof Error ? error.message : m(msg("Failed to revert thread state.")),
+-    };
+-  }
+-}
+-
+ function withRestored<T>(
+   existing: ReadonlyArray<T> | undefined,
+   restored: ReadonlyArray<T>,
+diff --git a/apps/web/src/components/chat/timelineMessageEdit.logic.ts b/apps/web/src/components/chat/timelineMessageEdit.logic.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3215775be1fd7c84a5a3b5a1db5aa829ab7e1ccf
+--- /dev/null
++++ b/apps/web/src/components/chat/timelineMessageEdit.logic.ts
+@@ -0,0 +1,80 @@
++import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
++import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
++import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
++import {
++  collectComposerContextReferences,
++  replaceComposerContextReferences,
++  restoreAttachmentOnlyBootstrapPrompt,
++  stripAttachmentOnlyBootstrapPrompt,
++} from "@t3tools/shared/composerContextReferences";
++import type { ChatMessage } from "../../types";
++
++export function rewriteSuffixChangesFiles(
++  runs: ThreadStructure["runs"],
++  checkpoints: ThreadStructure["checkpoints"],
++  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
++  turnCount: number,
++): boolean {
++  const runStatuses = new Map(runs.map((run) => [run.id, run.status]));
++  const suffix = new Set(
++    runs
++      .filter((run) => run.ordinal > turnCount && run.status !== "rolled_back")
++      .map((run) => run.id),
++  );
++  return (
++    checkpoints.some(
++      (checkpoint) =>
++        checkpoint.runId !== null &&
++        (checkpoint.appRunOrdinal ?? 0) > turnCount &&
++        checkpoint.status !== "stale" &&
++        checkpointFileTotals(checkpoint).count > 0 &&
++        // A checkpoint may have outlived a run that paged out of the window.
++        runStatuses.get(checkpoint.runId) !== "rolled_back",
++    ) ||
++    turnItems.some(
++      (item) =>
++        item.runId !== null &&
++        suffix.has(item.runId) &&
++        item.type === "file_change" &&
++        item.status === "completed" &&
++        item.fileName !== "",
++    )
++  );
++}
++
++/** Keep wire references intact while showing their readable labels in the textarea. */
++export function editableTimelinePrompt(message: ChatMessage) {
++  const original = stripAttachmentOnlyBootstrapPrompt(message.text);
++  const references = new Map<string, string>();
++  const literalText = replaceComposerContextReferences(original, () => "");
++  const originalReferences = collectComposerContextReferences(original);
++  const aliases = new Map<string, string>();
++  const prompt = replaceComposerContextReferences(original, ({ label, source }) => {
++    const existing = aliases.get(source);
++    if (existing !== undefined) return existing;
++    let alias = `[${label}]`;
++    let suffix = 2;
++    while (
++      references.has(alias) ||
++      literalText.includes(alias) ||
++      originalReferences.some(
++        (reference) => reference.source !== source && reference.source.startsWith(alias),
++      )
++    ) {
++      alias = `[${label} ${suffix++}]`;
++    }
++    aliases.set(source, alias);
++    references.set(alias, source);
++    return alias;
++  });
++  return { prompt, references };
++}
++
++export function timelineResendText(
++  prompt: string,
++  references: ReadonlyMap<string, string>,
++  hasAttachments: boolean,
++): string {
++  const text = prompt.replace(/\[[^\]\r\n]*\]/g, (label) => references.get(label) ?? label);
++  return restoreAttachmentOnlyBootstrapPrompt(text, hasAttachments);
++}
+diff --git a/apps/web/src/components/chat/useTimelineRewind.ts b/apps/web/src/components/chat/useTimelineRewind.ts
+index 945ef671bc935aea492f79289a32fd146f73ee66..434bea55a1781826f1cdfaaa5cc9f09c0c3f5824 100644
+--- a/apps/web/src/components/chat/useTimelineRewind.ts
++++ b/apps/web/src/components/chat/useTimelineRewind.ts
+@@ -1,15 +1,19 @@
+ import { msg } from "gt-react";
++import { useRef } from "react";
++import { useAtomValue } from "@effect/atom-react";
++import { Atom } from "effect/reactivity";
++import * as Option from "effect/Option";
+ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+ import { m } from "~/i18n/messages";
+ import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
+-import type { ComposerThreadTarget } from "../../composerDraftStore";
+-import type { ComposerHandleRef } from "../../composerHandleContext";
+ import type { SessionPhase } from "../../types";
+ import { useStableCallback } from "../../hooks/useStableCallback";
+ import {
+   AuthOrchestrationOperateScope,
+   type EnvironmentId,
+-  type MessageId,
++  CommandId,
++  MessageId,
++  type ResolvedKeybindingsConfig,
+   type ScopedThreadRef,
+   type ThreadId,
+   type RunId,
+@@ -22,25 +26,45 @@ import {
+ } from "@t3tools/client-runtime/state/runtime";
+ import { readLocalApi } from "../../localApi";
+ import { findRevertCheckpoint } from "../../session-logic";
+-import { type ChatMessage } from "../../types";
+-import { newThreadId } from "~/lib/utils";
++import { DEFAULT_INTERACTION_MODE, type ChatMessage } from "../../types";
++import { newThreadId, randomUUID } from "~/lib/utils";
++import { appAtomRegistry } from "~/rpc/atomRegistry";
+ import { buildThreadRouteParams } from "../../threadRoutes";
+ import { useComposerDraftStore } from "../../composerDraftStore";
+-import { threadEnvironment } from "../../state/threads";
++import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
+ import { waitForThreadShell } from "../../state/entities";
+-import { openRevertConfirm } from "./ChatOverlayHosts";
+-import { assetEnvironment } from "../../state/assets";
+ import { readEnvironmentScope } from "../../state/session";
+ import { useAtomCommand } from "../../state/use-atom-command";
+ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+-import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
+-import { rewindToMessage } from "./chatViewSend";
+-import { makeThreadErrorSetter } from "../ChatView.logic";
++import { draftSendState } from "./chatViewSend";
++import { waitForRevertedMessage, type makeThreadErrorSetter } from "../ChatView.logic";
++import {
++  editableTimelinePrompt,
++  rewriteSuffixChangesFiles,
++  timelineResendText,
++} from "./timelineMessageEdit.logic";
++
++interface TimelineEdit {
++  readonly message: ChatMessage;
++  readonly turnCount: number;
++  readonly draft: { prompt: string; readonly references: ReadonlyMap<string, string> };
++  readonly resendId: MessageId;
++  readonly resendCommand: CommandId;
++  readonly stage: "editing" | "confirming" | "sending";
++  readonly tailId: RunId | null;
++  readonly rewind: { readonly commandId: CommandId; readonly restoreFiles: boolean } | null;
++  readonly rewound: boolean;
++  readonly error: string | null;
++}
++
++// Retain the draft if the row is virtualized or the user switches threads during a resend.
++const timelineEditAtom = Atom.family((_threadKey: string) =>
++  Atom.make<TimelineEdit | null>(null).pipe(Atom.keepAlive),
++);
+ interface TimelineRewindInput {
+   readonly environmentId: EnvironmentId;
+   readonly routeThreadRef: ScopedThreadRef;
+   readonly routeThreadKey: string;
+-  readonly currentRouteThreadKeyRef: { readonly current: string | null };
+   readonly serverProjection: ThreadStructure | null;
+   readonly activeThread: EnvironmentThreadShell | undefined;
+   readonly timelineMessages: ReadonlyArray<ChatMessage>;
+@@ -50,22 +74,18 @@ interface TimelineRewindInput {
+   readonly supportsConversationRollback: boolean;
+   readonly activeEnvironmentUnavailable: boolean;
+   readonly activeEnvironmentUnavailableLabel: string | null;
+-  readonly promptRef: { current: string };
+-  readonly composerRef: ComposerHandleRef;
+-  readonly composerDraftTarget: ComposerThreadTarget;
++  readonly keybindings: ResolvedKeybindingsConfig;
+   readonly setThreadError: ReturnType<typeof makeThreadErrorSetter>;
+ }
+ 
+ /**
+- * Going back in a thread's timeline: reverting to an earlier turn (restoring that message into
+- * the composer) and forking a new thread from a run.
++ * Going back in a thread's timeline: editing and resending a message in place, or forking a run.
+  */
+ export function useTimelineRewind(input: TimelineRewindInput) {
+   const {
+     environmentId,
+     routeThreadRef,
+     routeThreadKey,
+-    currentRouteThreadKeyRef,
+     serverProjection,
+     activeThread,
+     timelineMessages,
+@@ -75,16 +95,29 @@ export function useTimelineRewind(input: TimelineRewindInput) {
+     supportsConversationRollback,
+     activeEnvironmentUnavailable,
+     activeEnvironmentUnavailableLabel,
+-    promptRef,
+-    composerRef,
+-    composerDraftTarget,
++    keybindings,
+     setThreadError,
+   } = input;
+   const navigate = useNavigate();
+-  const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
++  const editAtom = timelineEditAtom(routeThreadKey);
++  const edit = useAtomValue(editAtom);
++  const editorRef = useRef<HTMLTextAreaElement>(null);
++  const readProjection = () =>
++    Option.getOrNull(appAtomRegistry.get(environmentThreadDetails.stateAtom(routeThreadRef)).data);
++  const tailRun = (runs: ThreadStructure["runs"], turnCount: number) =>
++    runs.reduce<(typeof runs)[number] | undefined>(
++      (last, run) =>
++        run.status !== "rolled_back" &&
++        run.ordinal > turnCount &&
++        (last === undefined || run.ordinal > last.ordinal)
++          ? run
++          : last,
++      undefined,
++    );
++  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+     reportFailure: false,
+-    refresh: true,
+   });
++  const sendLock = draftSendState(routeThreadKey).sendInFlight;
+ 
+   const revertThreadCheckpoint = useOrchestrationCommand(threadEnvironment.revertCheckpoint, {
+     reportFailure: false,
+@@ -93,97 +126,246 @@ export function useTimelineRewind(input: TimelineRewindInput) {
+     reportFailure: false,
+   });
+ 
+-  const onRevertToTurnCount = async (
+-    turnCount: number,
+-    messageId: MessageId,
+-    restoreFiles?: boolean,
+-  ) => {
+-    const localApi = readLocalApi();
++  const operationError = () => {
++    if (!readLocalApi() || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
++      return m(msg("The environment is not connected."));
++    if (!supportsConversationRollback)
++      return m(
++        msg(
++          "This provider does not support reverting conversation history. Start a new thread instead.",
++        ),
++      );
++    if (activeEnvironmentUnavailable)
++      return activeEnvironmentUnavailableLabel
++        ? m(
++            msg("Reconnect {environment} before reverting checkpoints.", {
++              environment: activeEnvironmentUnavailableLabel,
++            }),
++          )
++        : m(msg("The environment is not connected."));
+     if (
+-      !localApi ||
+-      !activeThread ||
++      phase === "running" ||
++      phase === "connecting" ||
++      isSendBusy ||
+       isRevertingCheckpoint ||
+-      !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
++      sendLock.current
+     )
+-      return;
+-    const message = timelineMessages.find((message) => message.id === messageId);
+-    if (!message || message.role !== "user") return;
++      return m(msg("Interrupt the current turn before reverting checkpoints."));
++    return null;
++  };
+ 
+-    if (!supportsConversationRollback) {
+-      setThreadError(
+-        activeThread.id,
+-        m(
+-          msg(
+-            "This provider does not support reverting conversation history. Start a new thread instead.",
+-          ),
+-        ),
+-      );
++  const onRevertTimelineTurnStable = useStableCallback(
++    (turnCount: number, messageId: MessageId) => {
++      if (!activeThread) return;
++      const current = appAtomRegistry.get(editAtom);
++      if (current) {
++        editorRef.current?.focus();
++        return;
++      }
++      const message = timelineMessages.find((candidate) => candidate.id === messageId);
++      if (!message || message.role !== "user") return;
++      const error = operationError();
++      if (error) {
++        setThreadError(activeThread.id, error);
++        return;
++      }
++      appAtomRegistry.set(editAtom, {
++        message,
++        turnCount,
++        draft: editableTimelinePrompt(message),
++        resendId: MessageId.make(randomUUID()),
++        resendCommand: CommandId.make(randomUUID()),
++        stage: "editing",
++        tailId: null,
++        rewind: null,
++        rewound: false,
++        error: null,
++      });
++    },
++  );
++
++  const sendEdit = async (pending: TimelineEdit, restoreFiles: boolean) => {
++    if (!activeThread) return;
++    const projection = readProjection();
++    if (projection?.runs.some((run) => run.userMessageId === pending.resendId)) {
++      appAtomRegistry.set(editAtom, null);
+       return;
+     }
+-    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
+-      setThreadError(
+-        activeThread.id,
+-        m(
+-          msg("Reconnect {environment} before reverting checkpoints.", {
+-            environment: activeEnvironmentUnavailableLabel,
+-          }),
+-        ),
+-      );
++    const error = operationError();
++    if (error) {
++      appAtomRegistry.set(editAtom, { ...pending, stage: "editing", error });
+       return;
+     }
+-    if (phase === "running" || isSendBusy) {
+-      setThreadError(
+-        activeThread.id,
+-        m(msg("Interrupt the current turn before reverting checkpoints.")),
+-      );
++    const checkpoint = findRevertCheckpoint(
++      projection?.checkpoints ?? serverProjection?.checkpoints ?? [],
++      pending.turnCount,
++    );
++    const filesEligible = activeThread.worktreePath !== null && checkpoint?.status === "ready";
++    const runs = projection?.runs ?? [];
++    const rewindAlreadyApplied =
++      pending.rewind !== null &&
++      runs.some((run) => run.id === pending.tailId && run.status === "rolled_back");
++    const rewound = pending.rewound || rewindAlreadyApplied;
++    const tail = tailRun(runs, pending.turnCount);
++    if ((!rewound && tail?.id !== pending.tailId) || (rewound && tail !== undefined)) {
++      appAtomRegistry.set(editAtom, {
++        ...pending,
++        stage: "editing",
++        error: m(msg("The thread has changed. Select a message to rewind again.")),
++      });
+       return;
+     }
+-    if (restoreFiles === undefined) {
+-      openRevertConfirm(routeThreadKey, { turnCount, messageId });
++    if (restoreFiles && !filesEligible && pending.rewind === null) {
++      appAtomRegistry.set(editAtom, {
++        ...pending,
++        stage: "confirming",
++        error: m(msg("File restoration is unavailable for this checkpoint.")),
++      });
+       return;
+     }
+-
++    // These are already stored attachments belonging to the same thread. Rollback marks runs
++    // as rolled back and leaves their message/attachment records intact.
++    const attachments = pending.message.attachments ?? [];
++    const context = pending.message.context?.records.length
++      ? { version: 1 as const, records: pending.message.context.records }
++      : undefined;
++    const message = {
++      messageId: pending.resendId,
++      role: "user" as const,
++      text: timelineResendText(
++        pending.draft.prompt,
++        pending.draft.references,
++        attachments.length > 0,
++      ),
++      attachments,
++      ...(context === undefined ? {} : { context }),
++    };
++    let sending: TimelineEdit = { ...pending, rewound, stage: "sending", error: null };
++    sendLock.current = true;
+     useComposerDraftStore.setState((store) => ({
+       rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+     }));
++    appAtomRegistry.set(editAtom, sending);
+     setThreadError(activeThread.id, null);
+-    const rewind = await rewindToMessage({
+-      message,
+-      environmentId,
+-      routeThreadRef,
+-      threadId: activeThread.id,
+-      turnCount,
+-      restoreFiles,
+-      // Keep the live checkpoint identity when command context refetches a bounded window.
+-      checkpoint: findRevertCheckpoint(serverProjection?.checkpoints ?? [], turnCount),
+-      draftTarget: composerDraftTarget,
+-      composerHasPendingAttachments: composerRef.current?.hasPendingAttachments() === true,
+-      createAssetUrl: createAttachmentAssetUrl,
+-      revertThreadCheckpoint,
+-    });
+-    useComposerDraftStore.setState((store) => {
+-      const remaining = new Set(store.rewindingThreadKeys);
+-      remaining.delete(routeThreadKey);
+-      return { rewindingThreadKeys: remaining };
+-    });
+-    if (rewind.error !== null) {
+-      setThreadError(activeThread.id, rewind.error);
++    try {
++      if (!sending.rewound) {
++        const rewind = sending.rewind ?? { commandId: CommandId.make(randomUUID()), restoreFiles };
++        sending = { ...sending, rewind };
++        appAtomRegistry.set(editAtom, sending);
++        await waitForRevertedMessage(
++          routeThreadRef,
++          sending.turnCount,
++          rewind.commandId,
++          async () => {
++            const result = await revertThreadCheckpoint({
++              environmentId,
++              input: {
++                commandId: rewind.commandId,
++                threadId: activeThread.id,
++                turnCount: pending.turnCount,
++                restoreFiles: rewind.restoreFiles,
++                ...(checkpoint === undefined
++                  ? {}
++                  : { checkpointId: checkpoint.id, scopeId: checkpoint.scopeId }),
++              },
++            });
++            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
++          },
++        );
++        sending = { ...sending, rewound: true };
++        appAtomRegistry.set(editAtom, sending);
++      }
++      const result = await startThreadTurn({
++        environmentId,
++        input: {
++          commandId: sending.resendCommand,
++          threadId: activeThread.id,
++          message,
++          runtimeMode: activeThread.runtimeMode,
++          interactionMode: DEFAULT_INTERACTION_MODE,
++          dispatchMode: "start",
++        },
++      });
++      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
++      appAtomRegistry.set(editAtom, null);
++    } catch (error) {
++      const failure = readProjection()?.thread.rollbackFailure;
++      const retryRewind = failure?.requestId === sending.rewind?.commandId ? null : sending.rewind;
++      appAtomRegistry.set(editAtom, {
++        ...sending,
++        rewind: retryRewind,
++        stage: "editing",
++        error:
++          thrownErrorMessage(error, m) ??
++          (error instanceof Error ? error.message : m(msg("Failed to resend the edited message."))),
++      });
++    } finally {
++      sendLock.current = false;
++      useComposerDraftStore.setState((store) => {
++        const remaining = new Set(store.rewindingThreadKeys);
++        remaining.delete(routeThreadKey);
++        return { rewindingThreadKeys: remaining };
++      });
++    }
++  };
++
++  const submit = useStableCallback(() => {
++    const pending = appAtomRegistry.get(editAtom);
++    if (
++      !pending ||
++      pending.stage !== "editing" ||
++      (!pending.draft.prompt.trim() && !pending.message.attachments?.length)
++    )
++      return;
++    if (pending.rewound || pending.rewind !== null) {
++      void sendEdit(pending, pending.rewind?.restoreFiles ?? false);
+       return;
+     }
+-    if (currentRouteThreadKeyRef.current === routeThreadKey) {
+-      const nextPrompt = rewind.prompt;
+-      promptRef.current = nextPrompt;
+-      composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
+-      requestAnimationFrame(() => {
+-        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
++    const projection = readProjection();
++    const tail = tailRun(projection?.runs ?? [], pending.turnCount);
++    if (!tail) {
++      appAtomRegistry.set(editAtom, {
++        ...pending,
++        error: m(msg("The thread has changed. Select a message to rewind again.")),
+       });
++      return;
+     }
+-  };
+-  const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
+-  const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
+-    void onRevertToTurnCount(turnCount, messageId, restoreFiles);
+-  };
+-  const onConfirmRevertStable = useStableCallback(onConfirmRevert);
++    const next = { ...pending, tailId: tail.id };
++    if (
++      projection &&
++      rewriteSuffixChangesFiles(
++        projection.runs,
++        projection.checkpoints,
++        projection.turnItems,
++        pending.turnCount,
++      )
++    ) {
++      appAtomRegistry.set(editAtom, { ...next, stage: "confirming", error: null });
++    } else {
++      void sendEdit(next, false);
++    }
++  });
++  const confirm = useStableCallback((restoreFiles: boolean) => {
++    const pending = appAtomRegistry.get(editAtom);
++    if (pending?.stage === "confirming") void sendEdit(pending, restoreFiles);
++  });
++  const dismissConfirmation = useStableCallback(() => {
++    const pending = appAtomRegistry.get(editAtom);
++    if (pending?.stage === "confirming")
++      appAtomRegistry.set(editAtom, { ...pending, stage: "editing" });
++  });
++  const cancel = useStableCallback(() => {
++    const pending = appAtomRegistry.get(editAtom);
++    if (pending?.stage !== "editing") return;
++    appAtomRegistry.set(editAtom, null);
++    requestAnimationFrame(() => {
++      document
++        .querySelector<HTMLButtonElement>(
++          `[data-edit-timeline-message="${CSS.escape(pending.message.id)}"]`,
++        )
++        ?.focus();
++    });
++  });
+ 
+   const onForkFromRun = async (input: {
+     readonly sourceThreadId: ThreadId;
+@@ -229,13 +411,24 @@ export function useTimelineRewind(input: TimelineRewindInput) {
+     });
+   };
+   const onForkFromRunStable = useStableCallback(onForkFromRun);
+-  const onRevertTimelineTurn = (targetTurnCount: number, messageId: MessageId) => {
+-    void onRevertToTurnCountStable(targetTurnCount, messageId);
+-  };
+-  const onRevertTimelineTurnStable = useStableCallback(onRevertTimelineTurn);
+   return {
+-    onConfirmRevertStable,
+     onForkFromRunStable,
+     onRevertTimelineTurnStable,
++    editControls:
++      edit === null
++        ? null
++        : {
++            edit,
++            keybindings,
++            editorRef,
++            submit,
++            confirm,
++            cancel,
++            dismissConfirmation,
++            canRestoreFiles:
++              activeThread?.worktreePath != null &&
++              findRevertCheckpoint(serverProjection?.checkpoints ?? [], edit.turnCount)?.status ===
++                "ready",
++          },
+   };
+ }
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5439ee39688eade31897af144b50a5f5383f290e..cd89928d64031ebff7b57c7491de5ebee8bf0d37 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -1667,8 +1667,6 @@
+   "258cd8157d6edbea": "Aktualisiere die Antigravity-Modelle in den Anbietereinstellungen, bevor du sendest.",
+   "942a831ce4a4171e": "Dieses Antigravity-Modell ist nicht mehr verfügbar. Wähle ein anderes Modell.",
+   "b4c2c30643ea00bb": "Die Umgebung hat eine ungültige Anhang-URL zurückgegeben.",
+-  "8477c16ec31f6477": "Diese Nachricht hat einen Anhang, der nicht wiederhergestellt werden kann.",
+-  "b64793806a0a34cc": "Anhang konnte nicht wiederhergestellt werden: {name}",
+   "234136732961387e": "{count, plural, =1 {Abgelaufener Terminal-Kontext wird nicht gesendet} other {Abgelaufene Terminal-Kontexte werden nicht gesendet}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Entferne ihn oder füge ihn erneut hinzu, um die Terminalausgabe einzubeziehen.} other {Entferne sie oder füge sie erneut hinzu, um die Terminalausgabe einzubeziehen.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Abgelaufener Terminal-Kontext wurde aus der Nachricht entfernt} other {Abgelaufene Terminal-Kontexte wurden aus der Nachricht entfernt}}",
+@@ -3314,10 +3312,6 @@
+   ],
+   "2ce5b965862599cc": "Du hast nicht committete Änderungen. Sie werden in den anderen Branch übernommen oder blockieren den Wechsel, wenn sie kollidieren.",
+   "c4280e2f9ff0e319": "Branch wechseln",
+-  "2369e92930d2d529": "Ab hier bearbeiten?",
+-  "2028c02df18f2ccd": "Chat auf den Stand vor dieser Nachricht zurückspulen. Dein Prompt und deine Anhänge kehren ins Eingabefeld zurück. „Auch Dateien zurücksetzen“ macht auch deine eigenen Änderungen rückgängig.",
+-  "95021203628e2378": "Auch Dateien zurücksetzen",
+-  "c1c9ebabaa960f8c": "Zurücksetzen und Änderungen behalten",
+   "359e36da660f2c59": "Genehmigung von {title}",
+   "8d9617edf6eee5b9": "Die Genehmigungsentscheidung konnte nicht übermittelt werden.",
+   "160ead9e70889628": [
+@@ -4239,6 +4233,11 @@
+   "c92a0bab54261695": "Auf diese Antwort antworten",
+   "f6958f38dc87c712": "Ab dieser Antwort forken",
+   "72f8e14b1246d224": "Auf diese Antwort antworten",
++  "e58fda8216f2ccfd": "Wie sollen Dateiänderungen beim erneuten Senden behandelt werden?",
++  "713746f6d40f9ef1": "Die Unterhaltung ab dieser Nachricht wird ersetzt. Durch das Wiederherstellen der Dateien werden auch deine eigenen Änderungen seit dieser Nachricht rückgängig gemacht.",
++  "e336342fe8ba4102": "Die Unterhaltung ab dieser Nachricht wird ersetzt. Die Dateien können nicht wiederhergestellt werden und bleiben beim erneuten Senden erhalten.",
++  "658df8b97864e7bb": "Dateien wiederherstellen und senden",
++  "9949d7412a5abc85": "Dateien behalten und senden",
+   "01d7728e893c281d": "Zur Nachricht springen: {text}",
+   "e5428a0daffa236c": "Benutzernachricht",
+   "d18107d06a0eb562": "Vorherige Runde",
+@@ -4273,6 +4272,7 @@
+   "ae3f487ebde9db74": "Zuerst eingereiht, dann zum Umlenken der aktiven Runde vorgezogen",
+   "4f2ec8c81b4efb22": "Hat die aktive Runde umgelenkt",
+   "d201a2c11fc08817": "Ab hier bearbeiten",
++  "6aa69394ec8e9be1": "Nachricht bearbeiten",
+   "5b30ae788fdc4fd0": "Wird gesendet…",
+   "b8e1cd0265566143": [
+     {
+@@ -4574,9 +4574,6 @@
+   "dbba8f04cf03156e": "Nachricht konnte nicht gesendet werden.",
+   "9cdf086fb271934e": "Erneuten Versuch erlauben",
+   "7031b06fd2df3b6c": "Die vorherige Anfrage läuft möglicherweise bereits. Prüfe zuerst ihren Thread. Ein weiteres Senden erlauben, das einen doppelten Thread erzeugen könnte?",
+-  "d226ee7c6afacac0": "Warte, bis die Anhänge vorbereitet sind, bevor du zurückspulst.",
+-  "164ccef2f6f8f0e0": "Schaffe im Eingabefeld Platz für die Anhänge dieser Nachricht, bevor du zurückspulst.",
+-  "52d1d17102318779": "Thread-Zustand konnte nicht zurückgesetzt werden.",
+   "08160f331ed1531c": "Der Anbieter für {model} ist nicht verfügbar.",
+   "59362fd6489ab5f9": "Anhang ''{name}'' konnte nicht hochgeladen werden.",
+   "830b6f7255a7ca18": "Dieser Server unterstützt keine Dateianhänge.",
+@@ -4822,6 +4819,8 @@
+   "e7f9e31365849b9f": "Dieser Anbieter unterstützt das Zurücksetzen des Gesprächsverlaufs nicht. Starte stattdessen einen neuen Thread.",
+   "31db4cf2474ef2a6": "Verbinde {environment} neu, bevor du Checkpoints zurücksetzt.",
+   "f7d2db726b3a9316": "Unterbrich die aktuelle Runde, bevor du Checkpoints zurücksetzt.",
++  "d40b1bbed6895ce7": "Für diesen Prüfpunkt können keine Dateien wiederhergestellt werden.",
++  "69c17a5b4e37fd23": "Die bearbeitete Nachricht konnte nicht erneut gesendet werden.",
+   "91688a74a7e860d1": "Diese Antwort konnte nicht geforkt werden.",
+   "831fba9edc1a8f8c": "Der Fork wurde erstellt, aber seine Thread-Daten haben diesen Client nicht erreicht. Verbinde dich neu und versuche, ihn über die Seitenleiste zu öffnen.",
+   "8e1c73b331981bf5": "Nutzungslimits sind für diesen Anbieter nicht verfügbar",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index c378e66342505d9a5fa15fb0767a74aad29325d5..ee22360be65fa444cdd4c74d24f09747923f67c2 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Refresh Antigravity models in provider settings before sending.",
+   "942a831ce4a4171e": "That Antigravity model is no longer available. Choose another model.",
+   "b4c2c30643ea00bb": "The environment returned an invalid attachment URL.",
+-  "8477c16ec31f6477": "This message has an attachment that cannot be restored.",
+-  "b64793806a0a34cc": "Could not restore attachment: {name}",
+   "234136732961387e": "{count, plural, =1 {Expired terminal context won't be sent} other {Expired terminal contexts won't be sent}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Remove it or re-add it to include terminal output.} other {Remove them or re-add them to include terminal output.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Expired terminal context omitted from message} other {Expired terminal contexts omitted from message}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "You have uncommitted changes. They'll carry over to the other branch, or block the switch if they conflict.",
+   "c4280e2f9ff0e319": "Switch branch",
+-  "2369e92930d2d529": "Edit from here?",
+-  "2028c02df18f2ccd": "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits.",
+-  "95021203628e2378": "Revert files too",
+-  "c1c9ebabaa960f8c": "Revert and keep changes",
+   "359e36da660f2c59": "Approval from {title}",
+   "8d9617edf6eee5b9": "Failed to submit approval decision.",
+   "160ead9e70889628": [
+@@ -4238,6 +4232,11 @@
+   "c92a0bab54261695": "Reply to this response",
+   "f6958f38dc87c712": "Fork from this response",
+   "72f8e14b1246d224": "Reply to this response",
++  "e58fda8216f2ccfd": "How should file changes be handled before resending?",
++  "713746f6d40f9ef1": "The conversation from this message onward will be replaced. Restoring files also undoes your own changes since this message.",
++  "e336342fe8ba4102": "The conversation from this message onward will be replaced. File restoration is unavailable, so resending keeps the current files.",
++  "658df8b97864e7bb": "Restore files and send",
++  "9949d7412a5abc85": "Keep files and send",
+   "01d7728e893c281d": "Jump to message: {text}",
+   "e5428a0daffa236c": "User message",
+   "d18107d06a0eb562": "Previous turn",
+@@ -4272,6 +4271,7 @@
+   "ae3f487ebde9db74": "Originally queued, then promoted to steer the active turn",
+   "4f2ec8c81b4efb22": "Steered the active turn",
+   "d201a2c11fc08817": "Edit from here",
++  "6aa69394ec8e9be1": "Edit message",
+   "5b30ae788fdc4fd0": "Sending…",
+   "b8e1cd0265566143": [
+     "Download ",
+@@ -4573,9 +4573,6 @@
+   "dbba8f04cf03156e": "Failed to send message.",
+   "9cdf086fb271934e": "Allow retry",
+   "7031b06fd2df3b6c": "The previous request may already be running. Check its thread first. Allow another send that could create a duplicate thread?",
+-  "d226ee7c6afacac0": "Wait for attachments to finish preparing before rewinding.",
+-  "164ccef2f6f8f0e0": "Make room for this message's attachments in the composer before rewinding.",
+-  "52d1d17102318779": "Failed to revert thread state.",
+   "08160f331ed1531c": "Provider for {model} is unavailable.",
+   "59362fd6489ab5f9": "Attachment ''{name}'' failed to upload.",
+   "830b6f7255a7ca18": "This server does not support file attachments.",
+@@ -4821,6 +4818,8 @@
+   "e7f9e31365849b9f": "This provider does not support reverting conversation history. Start a new thread instead.",
+   "31db4cf2474ef2a6": "Reconnect {environment} before reverting checkpoints.",
+   "f7d2db726b3a9316": "Interrupt the current turn before reverting checkpoints.",
++  "d40b1bbed6895ce7": "File restoration is unavailable for this checkpoint.",
++  "69c17a5b4e37fd23": "Failed to resend the edited message.",
+   "91688a74a7e860d1": "Failed to fork this response.",
+   "831fba9edc1a8f8c": "The fork was created, but its thread data did not reach this client. Reconnect and try opening it from the sidebar.",
+   "8e1c73b331981bf5": "Usage limits are unavailable for this provider",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 1538850527718730a5137e340ce7f8f44d40e643..dca1f5a8fb2c5cbedab7c382252d1c1694cde6f5 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Actualiza los modelos de Antigravity en los ajustes del proveedor antes de enviar.",
+   "942a831ce4a4171e": "Ese modelo de Antigravity ya no está disponible. Elige otro modelo.",
+   "b4c2c30643ea00bb": "El entorno devolvió una URL de adjunto no válida.",
+-  "8477c16ec31f6477": "Este mensaje tiene un adjunto que no se puede restaurar.",
+-  "b64793806a0a34cc": "No se pudo restaurar el adjunto: {name}",
+   "234136732961387e": "{count, plural, =1 {No se enviará el contexto de terminal caducado} other {No se enviarán los contextos de terminal caducados}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Quítalo o vuelve a añadirlo para incluir la salida de la terminal.} other {Quítalos o vuelve a añadirlos para incluir la salida de la terminal.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Contexto de terminal caducado omitido del mensaje} other {Contextos de terminal caducados omitidos del mensaje}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "Tienes cambios sin commit. Pasarán a la otra rama, o bloquearán el cambio si hay conflictos.",
+   "c4280e2f9ff0e319": "Cambiar de rama",
+-  "2369e92930d2d529": "¿Editar desde aquí?",
+-  "2028c02df18f2ccd": "Vuelve atrás en el chat hasta antes de este mensaje. Tu prompt y tus adjuntos vuelven al cuadro de mensaje. «Revertir también los archivos» también deshace tus propias ediciones.",
+-  "95021203628e2378": "Revertir también los archivos",
+-  "c1c9ebabaa960f8c": "Revertir y conservar los cambios",
+   "359e36da660f2c59": "Aprobación de {title}",
+   "8d9617edf6eee5b9": "No se pudo enviar la decisión de aprobación.",
+   "160ead9e70889628": [
+@@ -4236,6 +4230,11 @@
+   "c92a0bab54261695": "Responder a esta respuesta",
+   "f6958f38dc87c712": "Bifurcar desde esta respuesta",
+   "72f8e14b1246d224": "Responder a esta respuesta",
++  "e58fda8216f2ccfd": "¿Qué quieres hacer con los cambios en los archivos al reenviar?",
++  "713746f6d40f9ef1": "La conversación se reemplazará a partir de este mensaje. Restaurar los archivos también deshace los cambios que hayas hecho desde entonces.",
++  "e336342fe8ba4102": "La conversación se reemplazará a partir de este mensaje. Como no se pueden restaurar los archivos, se conservarán al reenviar.",
++  "658df8b97864e7bb": "Restaurar archivos y enviar",
++  "9949d7412a5abc85": "Conservar archivos y enviar",
+   "01d7728e893c281d": "Ir al mensaje: {text}",
+   "e5428a0daffa236c": "Mensaje del usuario",
+   "d18107d06a0eb562": "Turno anterior",
+@@ -4270,6 +4269,7 @@
+   "ae3f487ebde9db74": "Se puso en cola y luego se promovió para redirigir el turno activo",
+   "4f2ec8c81b4efb22": "Redirigió el turno activo",
+   "d201a2c11fc08817": "Editar desde aquí",
++  "6aa69394ec8e9be1": "Editar mensaje",
+   "5b30ae788fdc4fd0": "Enviando…",
+   "b8e1cd0265566143": [
+     "Descargar ",
+@@ -4571,9 +4571,6 @@
+   "dbba8f04cf03156e": "No se pudo enviar el mensaje.",
+   "9cdf086fb271934e": "Permitir reintento",
+   "7031b06fd2df3b6c": "Puede que la solicitud anterior ya se esté ejecutando. Revisa primero su hilo. ¿Permitir otro envío que podría crear un hilo duplicado?",
+-  "d226ee7c6afacac0": "Espera a que terminen de prepararse los adjuntos antes de volver atrás.",
+-  "164ccef2f6f8f0e0": "Haz sitio en el cuadro de mensaje para los adjuntos de este mensaje antes de volver atrás.",
+-  "52d1d17102318779": "No se pudo revertir el estado del hilo.",
+   "08160f331ed1531c": "El proveedor de {model} no está disponible.",
+   "59362fd6489ab5f9": "No se pudo subir el adjunto ''{name}''.",
+   "830b6f7255a7ca18": "Este servidor no admite archivos adjuntos.",
+@@ -4819,6 +4816,8 @@
+   "e7f9e31365849b9f": "Este proveedor no permite revertir el historial de conversación. Inicia un hilo nuevo.",
+   "31db4cf2474ef2a6": "Vuelve a conectar {environment} antes de revertir puntos de control.",
+   "f7d2db726b3a9316": "Interrumpe el turno actual antes de revertir puntos de control.",
++  "d40b1bbed6895ce7": "No se pueden restaurar archivos desde este punto de control.",
++  "69c17a5b4e37fd23": "No se pudo reenviar el mensaje editado.",
+   "91688a74a7e860d1": "No se pudo bifurcar esta respuesta.",
+   "831fba9edc1a8f8c": "Se creó la bifurcación, pero los datos de su hilo no llegaron a este cliente. Vuelve a conectar y prueba a abrirla desde la barra lateral.",
+   "8e1c73b331981bf5": "Los límites de uso no están disponibles para este proveedor",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..44fa9db0705893ac18d5eb0cdf19e8259a46fc15 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Actualisez les modèles Antigravity dans les paramètres des fournisseurs avant d’envoyer.",
+   "942a831ce4a4171e": "Ce modèle Antigravity n’est plus disponible. Choisissez-en un autre.",
+   "b4c2c30643ea00bb": "L’environnement a renvoyé une URL de pièce jointe non valide.",
+-  "8477c16ec31f6477": "Ce message contient une pièce jointe qui ne peut pas être restaurée.",
+-  "b64793806a0a34cc": "Impossible de restaurer la pièce jointe : {name}",
+   "234136732961387e": "{count, plural, =1 {Le contexte de terminal expiré ne sera pas envoyé} other {Les contextes de terminal expirés ne seront pas envoyés}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Supprimez-le ou ajoutez-le à nouveau pour inclure la sortie du terminal.} other {Supprimez-les ou ajoutez-les à nouveau pour inclure la sortie du terminal.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Contexte de terminal expiré omis du message} other {Contextes de terminal expirés omis du message}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "Vous avez des modifications non commitées. Elles seront reportées sur l’autre branche, ou bloqueront le changement en cas de conflit.",
+   "c4280e2f9ff0e319": "Changer de branche",
+-  "2369e92930d2d529": "Modifier à partir d’ici ?",
+-  "2028c02df18f2ccd": "Ramène la discussion avant ce message. Votre prompt et vos pièces jointes reviennent dans la zone de saisie. « Annuler aussi les fichiers » annule également vos propres modifications.",
+-  "95021203628e2378": "Annuler aussi les fichiers",
+-  "c1c9ebabaa960f8c": "Revenir en arrière en gardant les modifications",
+   "359e36da660f2c59": "Approbation de {title}",
+   "8d9617edf6eee5b9": "Échec de l’envoi de la décision d’approbation.",
+   "160ead9e70889628": [
+@@ -4237,6 +4231,11 @@
+   "c92a0bab54261695": "Répondre à cette réponse",
+   "f6958f38dc87c712": "Créer un fork depuis cette réponse",
+   "72f8e14b1246d224": "Répondre à cette réponse",
++  "e58fda8216f2ccfd": "Que faire des modifications de fichiers avant de renvoyer le message ?",
++  "713746f6d40f9ef1": "La conversation sera remplacée à partir de ce message. Restaurer les fichiers annule aussi vos propres modifications effectuées depuis ce message.",
++  "e336342fe8ba4102": "La conversation sera remplacée à partir de ce message. La restauration est indisponible et le renvoi conservera les fichiers actuels.",
++  "658df8b97864e7bb": "Restaurer les fichiers et envoyer",
++  "9949d7412a5abc85": "Conserver les fichiers et envoyer",
+   "01d7728e893c281d": "Aller au message : {text}",
+   "e5428a0daffa236c": "Message de l’utilisateur",
+   "d18107d06a0eb562": "Tour précédent",
+@@ -4271,6 +4270,7 @@
+   "ae3f487ebde9db74": "Initialement en file d’attente, puis promu pour réorienter le tour actif",
+   "4f2ec8c81b4efb22": "A réorienté le tour actif",
+   "d201a2c11fc08817": "Modifier à partir d’ici",
++  "6aa69394ec8e9be1": "Modifier le message",
+   "5b30ae788fdc4fd0": "Envoi…",
+   "b8e1cd0265566143": [
+     "Télécharger ",
+@@ -4572,9 +4572,6 @@
+   "dbba8f04cf03156e": "Échec de l’envoi du message.",
+   "9cdf086fb271934e": "Autoriser une nouvelle tentative",
+   "7031b06fd2df3b6c": "La demande précédente est peut-être déjà en cours. Vérifiez d’abord son fil. Autoriser un nouvel envoi qui pourrait créer un fil en double ?",
+-  "d226ee7c6afacac0": "Attendez la fin de la préparation des pièces jointes avant de revenir en arrière.",
+-  "164ccef2f6f8f0e0": "Faites de la place dans la zone de saisie pour les pièces jointes de ce message avant de revenir en arrière.",
+-  "52d1d17102318779": "Échec de la restauration de l’état du fil.",
+   "08160f331ed1531c": "Le fournisseur de {model} est indisponible.",
+   "59362fd6489ab5f9": "Échec de l’envoi de la pièce jointe ''{name}''.",
+   "830b6f7255a7ca18": "Ce serveur ne prend pas en charge les pièces jointes.",
+@@ -4820,6 +4817,8 @@
+   "e7f9e31365849b9f": "Ce fournisseur ne permet pas d’annuler l’historique de conversation. Démarrez plutôt un nouveau fil.",
+   "31db4cf2474ef2a6": "Reconnectez {environment} avant de restaurer des points de contrôle.",
+   "f7d2db726b3a9316": "Interrompez le tour en cours avant de restaurer des points de contrôle.",
++  "d40b1bbed6895ce7": "Impossible de restaurer les fichiers à ce point de contrôle.",
++  "69c17a5b4e37fd23": "Impossible de renvoyer le message modifié.",
+   "91688a74a7e860d1": "Impossible de créer un fork depuis cette réponse.",
+   "831fba9edc1a8f8c": "Le fork a été créé, mais les données de son fil ne sont pas parvenues à ce client. Reconnectez-vous et essayez de l’ouvrir depuis la barre latérale.",
+   "8e1c73b331981bf5": "Les limites d’utilisation ne sont pas disponibles pour ce fournisseur",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index da6a34749df883d48fa5ec7db9008751c412cd09..301c6eb9216236f3ea11c22c272180fc507257c7 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -1667,8 +1667,6 @@
+   "258cd8157d6edbea": "送信する前に、プロバイダー設定で Antigravity のモデルを更新してください。",
+   "942a831ce4a4171e": "その Antigravity のモデルは利用できなくなりました。別のモデルを選択してください。",
+   "b4c2c30643ea00bb": "環境から無効な添付ファイルの URL が返されました。",
+-  "8477c16ec31f6477": "このメッセージには復元できない添付ファイルがあります。",
+-  "b64793806a0a34cc": "添付ファイルを復元できませんでした: {name}",
+   "234136732961387e": "{count, plural, =1 {期限切れのターミナルコンテキストは送信されません} other {期限切れのターミナルコンテキストは送信されません}}",
+   "15d397024f5ae47b": "{count, plural, =1 {ターミナルの出力を含めるには、削除するか追加し直してください。} other {ターミナルの出力を含めるには、削除するか追加し直してください。}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {期限切れのターミナルコンテキストをメッセージから除外しました} other {期限切れのターミナルコンテキストをメッセージから除外しました}}",
+@@ -3309,10 +3307,6 @@
+   ],
+   "2ce5b965862599cc": "コミットされていない変更があります。変更は別のブランチに引き継がれます。競合する場合は切り替えがブロックされます。",
+   "c4280e2f9ff0e319": "ブランチを切り替え",
+-  "2369e92930d2d529": "ここから編集しますか？",
+-  "2028c02df18f2ccd": "このメッセージの前までチャットを巻き戻します。プロンプトと添付ファイルは入力欄に戻ります。「ファイルも元に戻す」を選ぶと、自分で行った編集も元に戻ります。",
+-  "95021203628e2378": "ファイルも元に戻す",
+-  "c1c9ebabaa960f8c": "巻き戻して変更を保持",
+   "359e36da660f2c59": "{title} からの承認",
+   "8d9617edf6eee5b9": "承認の判断を送信できませんでした。",
+   "160ead9e70889628": [
+@@ -4227,6 +4221,11 @@
+   "c92a0bab54261695": "この応答に返信",
+   "f6958f38dc87c712": "この応答からフォーク",
+   "72f8e14b1246d224": "この応答に返信",
++  "e58fda8216f2ccfd": "再送信時にファイルの変更をどう処理しますか？",
++  "713746f6d40f9ef1": "このメッセージ以降の会話が置き換わります。ファイルを復元すると、このメッセージ以降に自分で行った変更も元に戻ります。",
++  "e336342fe8ba4102": "このメッセージ以降の会話が置き換わります。ファイルは復元できないため、再送信しても現在のファイルが保持されます。",
++  "658df8b97864e7bb": "ファイルを復元して送信",
++  "9949d7412a5abc85": "ファイルを保持して送信",
+   "01d7728e893c281d": "メッセージに移動: {text}",
+   "e5428a0daffa236c": "ユーザーのメッセージ",
+   "d18107d06a0eb562": "前のターン",
+@@ -4261,6 +4260,7 @@
+   "ae3f487ebde9db74": "最初はキューに追加され、その後アクティブなターンの軌道修正に昇格しました",
+   "4f2ec8c81b4efb22": "アクティブなターンを軌道修正しました",
+   "d201a2c11fc08817": "ここから編集",
++  "6aa69394ec8e9be1": "メッセージを編集",
+   "5b30ae788fdc4fd0": "送信しています…",
+   "b8e1cd0265566143": [
+     {
+@@ -4561,9 +4561,6 @@
+   "dbba8f04cf03156e": "メッセージを送信できませんでした。",
+   "9cdf086fb271934e": "再試行を許可",
+   "7031b06fd2df3b6c": "前のリクエストがすでに実行中の可能性があります。まずそのスレッドを確認してください。重複したスレッドが作成される可能性がありますが、もう一度送信しますか？",
+-  "d226ee7c6afacac0": "巻き戻す前に、添付ファイルの準備が終わるまでお待ちください。",
+-  "164ccef2f6f8f0e0": "巻き戻す前に、このメッセージの添付ファイルを入れられるよう入力欄に空きを作ってください。",
+-  "52d1d17102318779": "スレッドの状態を元に戻せませんでした。",
+   "08160f331ed1531c": "{model} のプロバイダーを利用できません。",
+   "59362fd6489ab5f9": "添付ファイル ''{name}'' をアップロードできませんでした。",
+   "830b6f7255a7ca18": "このサーバーはファイルの添付をサポートしていません。",
+@@ -4809,6 +4806,8 @@
+   "e7f9e31365849b9f": "このプロバイダーは会話履歴を元に戻す機能をサポートしていません。代わりに新しいスレッドを開始してください。",
+   "31db4cf2474ef2a6": "チェックポイントを元に戻す前に {environment} に再接続してください。",
+   "f7d2db726b3a9316": "チェックポイントを元に戻す前に、現在のターンを中断してください。",
++  "d40b1bbed6895ce7": "このチェックポイントではファイルを復元できません。",
++  "69c17a5b4e37fd23": "編集済みのメッセージを再送信できませんでした。",
+   "91688a74a7e860d1": "この応答をフォークできませんでした。",
+   "831fba9edc1a8f8c": "フォークは作成されましたが、スレッドのデータがこのクライアントに届きませんでした。再接続してから、サイドバーで開いてみてください。",
+   "8e1c73b331981bf5": "このプロバイダーでは使用量の上限を利用できません",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..4060dae210875dcdbefc30d9d965bedd1a6ce6c4 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -1667,8 +1667,6 @@
+   "258cd8157d6edbea": "보내기 전에 제공자 설정에서 Antigravity 모델을 새로 고치세요.",
+   "942a831ce4a4171e": "해당 Antigravity 모델은 더 이상 사용할 수 없습니다. 다른 모델을 선택하세요.",
+   "b4c2c30643ea00bb": "환경에서 잘못된 첨부 파일 URL을 반환했습니다.",
+-  "8477c16ec31f6477": "이 메시지에는 복원할 수 없는 첨부 파일이 있습니다.",
+-  "b64793806a0a34cc": "첨부 파일을 복원할 수 없습니다: {name}",
+   "234136732961387e": "{count, plural, =1 {만료된 터미널 컨텍스트는 전송되지 않습니다} other {만료된 터미널 컨텍스트는 전송되지 않습니다}}",
+   "15d397024f5ae47b": "{count, plural, =1 {터미널 출력을 포함하려면 제거하거나 다시 추가하세요.} other {터미널 출력을 포함하려면 제거하거나 다시 추가하세요.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {만료된 터미널 컨텍스트가 메시지에서 제외됨} other {만료된 터미널 컨텍스트가 메시지에서 제외됨}}",
+@@ -3309,10 +3307,6 @@
+   ],
+   "2ce5b965862599cc": "커밋되지 않은 변경 사항이 있습니다. 다른 브랜치로 옮겨지거나, 충돌하면 전환이 차단됩니다.",
+   "c4280e2f9ff0e319": "브랜치 전환",
+-  "2369e92930d2d529": "여기서부터 편집할까요?",
+-  "2028c02df18f2ccd": "이 메시지 이전으로 채팅을 되감습니다. 프롬프트와 첨부 파일은 입력창으로 돌아갑니다. “파일도 되돌리기”를 선택하면 직접 수정한 내용도 취소됩니다.",
+-  "95021203628e2378": "파일도 되돌리기",
+-  "c1c9ebabaa960f8c": "되돌리고 변경 사항 유지",
+   "359e36da660f2c59": "{title}의 승인 요청",
+   "8d9617edf6eee5b9": "승인 결정을 제출하지 못했습니다.",
+   "160ead9e70889628": [
+@@ -4224,6 +4218,11 @@
+   "c92a0bab54261695": "이 응답에 답장",
+   "f6958f38dc87c712": "이 응답에서 포크",
+   "72f8e14b1246d224": "이 응답에 답장",
++  "e58fda8216f2ccfd": "다시 보낼 때 파일 변경 사항을 어떻게 처리할까요?",
++  "713746f6d40f9ef1": "이 메시지부터 대화가 대체됩니다. 파일을 복원하면 이 메시지 이후 직접 변경한 내용도 되돌립니다.",
++  "e336342fe8ba4102": "이 메시지부터 대화가 대체됩니다. 파일을 복원할 수 없으므로 다시 보내도 현재 파일이 유지됩니다.",
++  "658df8b97864e7bb": "파일 복원 후 보내기",
++  "9949d7412a5abc85": "파일 유지 후 보내기",
+   "01d7728e893c281d": "메시지로 이동: {text}",
+   "e5428a0daffa236c": "사용자 메시지",
+   "d18107d06a0eb562": "이전 턴",
+@@ -4258,6 +4257,7 @@
+   "ae3f487ebde9db74": "원래 대기열에 있었지만 활성 턴의 방향 조정으로 승격됨",
+   "4f2ec8c81b4efb22": "활성 턴의 방향을 조정함",
+   "d201a2c11fc08817": "여기서부터 편집",
++  "6aa69394ec8e9be1": "메시지 편집",
+   "5b30ae788fdc4fd0": "보내는 중…",
+   "b8e1cd0265566143": [
+     {
+@@ -4558,9 +4558,6 @@
+   "dbba8f04cf03156e": "메시지를 보내지 못했습니다.",
+   "9cdf086fb271934e": "다시 시도 허용",
+   "7031b06fd2df3b6c": "이전 요청이 이미 실행 중일 수 있습니다. 먼저 해당 스레드를 확인하세요. 중복 스레드가 생길 수 있는데 다시 보내도록 허용할까요?",
+-  "d226ee7c6afacac0": "되감기 전에 첨부 파일 준비가 끝날 때까지 기다리세요.",
+-  "164ccef2f6f8f0e0": "되감기 전에 입력창에 이 메시지의 첨부 파일이 들어갈 공간을 확보하세요.",
+-  "52d1d17102318779": "스레드 상태를 되돌리지 못했습니다.",
+   "08160f331ed1531c": "{model}의 제공자를 사용할 수 없습니다.",
+   "59362fd6489ab5f9": "첨부 파일 ''{name}''을(를) 업로드하지 못했습니다.",
+   "830b6f7255a7ca18": "이 서버는 파일 첨부를 지원하지 않습니다.",
+@@ -4806,6 +4803,8 @@
+   "e7f9e31365849b9f": "이 제공자는 대화 기록 되돌리기를 지원하지 않습니다. 대신 새 스레드를 시작하세요.",
+   "31db4cf2474ef2a6": "체크포인트를 되돌리기 전에 {environment}을(를) 다시 연결하세요.",
+   "f7d2db726b3a9316": "체크포인트를 되돌리기 전에 현재 턴을 중단하세요.",
++  "d40b1bbed6895ce7": "이 체크포인트에서 파일을 복원할 수 없습니다.",
++  "69c17a5b4e37fd23": "편집한 메시지를 다시 보내지 못했습니다.",
+   "91688a74a7e860d1": "이 응답을 포크하지 못했습니다.",
+   "831fba9edc1a8f8c": "포크가 생성되었지만 스레드 데이터가 이 클라이언트에 도달하지 않았습니다. 다시 연결한 후 사이드바에서 열어 보세요.",
+   "8e1c73b331981bf5": "이 제공자는 사용량 한도를 사용할 수 없습니다",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..14bde64006e56be1c1ae384d3725f2431333b02e 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Atualize os modelos do Antigravity nas configurações de provedores antes de enviar.",
+   "942a831ce4a4171e": "Esse modelo do Antigravity não está mais disponível. Escolha outro modelo.",
+   "b4c2c30643ea00bb": "O ambiente retornou uma URL de anexo inválida.",
+-  "8477c16ec31f6477": "Esta mensagem tem um anexo que não pode ser restaurado.",
+-  "b64793806a0a34cc": "Não foi possível restaurar o anexo: {name}",
+   "234136732961387e": "{count, plural, =1 {O contexto expirado do terminal não será enviado} other {Os contextos expirados do terminal não serão enviados}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Remova-o ou adicione-o de novo para incluir a saída do terminal.} other {Remova-os ou adicione-os de novo para incluir a saída do terminal.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Contexto expirado do terminal omitido da mensagem} other {Contextos expirados do terminal omitidos da mensagem}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "Você tem alterações sem commit. Elas vão junto para o outro branch ou bloqueiam a troca se houver conflito.",
+   "c4280e2f9ff0e319": "Trocar de branch",
+-  "2369e92930d2d529": "Editar a partir daqui?",
+-  "2028c02df18f2ccd": "Volta o chat para antes desta mensagem. Seu prompt e seus anexos voltam para o editor de mensagens. “Reverter arquivos também” desfaz também suas próprias edições.",
+-  "95021203628e2378": "Reverter arquivos também",
+-  "c1c9ebabaa960f8c": "Reverter e manter as alterações",
+   "359e36da660f2c59": "Aprovação de {title}",
+   "8d9617edf6eee5b9": "Falha ao enviar a decisão de aprovação.",
+   "160ead9e70889628": [
+@@ -4236,6 +4230,11 @@
+   "c92a0bab54261695": "Responder a esta resposta",
+   "f6958f38dc87c712": "Criar fork a partir desta resposta",
+   "72f8e14b1246d224": "Responder a esta resposta",
++  "e58fda8216f2ccfd": "O que fazer com as alterações nos arquivos ao reenviar?",
++  "713746f6d40f9ef1": "A conversa será substituída a partir desta mensagem. Restaurar os arquivos também desfaz as alterações que você fez desde então.",
++  "e336342fe8ba4102": "A conversa será substituída a partir desta mensagem. Como a restauração está indisponível, o reenvio manterá os arquivos atuais.",
++  "658df8b97864e7bb": "Restaurar arquivos e enviar",
++  "9949d7412a5abc85": "Manter arquivos e enviar",
+   "01d7728e893c281d": "Ir para a mensagem: {text}",
+   "e5428a0daffa236c": "Mensagem do usuário",
+   "d18107d06a0eb562": "Turno anterior",
+@@ -4270,6 +4269,7 @@
+   "ae3f487ebde9db74": "Estava na fila e depois foi promovido para direcionar o turno ativo",
+   "4f2ec8c81b4efb22": "Direcionou o turno ativo",
+   "d201a2c11fc08817": "Editar a partir daqui",
++  "6aa69394ec8e9be1": "Editar mensagem",
+   "5b30ae788fdc4fd0": "Enviando…",
+   "b8e1cd0265566143": [
+     "Baixar ",
+@@ -4571,9 +4571,6 @@
+   "dbba8f04cf03156e": "Falha ao enviar a mensagem.",
+   "9cdf086fb271934e": "Permitir nova tentativa",
+   "7031b06fd2df3b6c": "A solicitação anterior pode já estar em execução. Verifique a thread dela primeiro. Permitir outro envio que pode criar uma thread duplicada?",
+-  "d226ee7c6afacac0": "Aguarde a preparação dos anexos antes de voltar.",
+-  "164ccef2f6f8f0e0": "Abra espaço para os anexos desta mensagem no editor de mensagens antes de voltar.",
+-  "52d1d17102318779": "Falha ao reverter o estado da thread.",
+   "08160f331ed1531c": "O provedor de {model} não está disponível.",
+   "59362fd6489ab5f9": "Falha ao enviar o anexo ''{name}''.",
+   "830b6f7255a7ca18": "Este servidor não aceita anexos de arquivo.",
+@@ -4819,6 +4816,8 @@
+   "e7f9e31365849b9f": "Este provedor não permite reverter o histórico da conversa. Inicie uma nova thread.",
+   "31db4cf2474ef2a6": "Reconecte {environment} antes de reverter checkpoints.",
+   "f7d2db726b3a9316": "Interrompa o turno atual antes de reverter checkpoints.",
++  "d40b1bbed6895ce7": "Não é possível restaurar os arquivos deste ponto de controle.",
++  "69c17a5b4e37fd23": "Não foi possível reenviar a mensagem editada.",
+   "91688a74a7e860d1": "Falha ao criar um fork desta resposta.",
+   "831fba9edc1a8f8c": "O fork foi criado, mas os dados da thread não chegaram a este cliente. Reconecte e tente abri-la pela barra lateral.",
+   "8e1c73b331981bf5": "Os limites de uso não estão disponíveis para este provedor",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..6e372f0812e42542b04e03f4041a22550645df0d 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Перед отправкой обновите список моделей Antigravity в настройках провайдеров.",
+   "942a831ce4a4171e": "Эта модель Antigravity больше недоступна. Выберите другую.",
+   "b4c2c30643ea00bb": "Окружение вернуло некорректный URL вложения.",
+-  "8477c16ec31f6477": "В этом сообщении есть вложение, которое нельзя восстановить.",
+-  "b64793806a0a34cc": "Не удалось восстановить вложение: {name}",
+   "234136732961387e": "{count, plural, =1 {Истёкший контекст терминала не будет отправлен} other {Истёкшие контексты терминала не будут отправлены}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Удалите его или добавьте заново, чтобы включить вывод терминала.} other {Удалите их или добавьте заново, чтобы включить вывод терминала.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Истёкший контекст терминала исключён из сообщения} other {Истёкшие контексты терминала исключены из сообщения}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "У вас есть незакоммиченные изменения. Они перейдут в другую ветку или заблокируют переключение при конфликте.",
+   "c4280e2f9ff0e319": "Переключить ветку",
+-  "2369e92930d2d529": "Редактировать отсюда?",
+-  "2028c02df18f2ccd": "Чат откатится к моменту перед этим сообщением. Ваш промпт и вложения вернутся в поле ввода. «Откатить и файлы» также отменяет ваши собственные правки.",
+-  "95021203628e2378": "Откатить и файлы",
+-  "c1c9ebabaa960f8c": "Откатить и сохранить изменения",
+   "359e36da660f2c59": "Подтверждение от {title}",
+   "8d9617edf6eee5b9": "Не удалось отправить решение по подтверждению.",
+   "160ead9e70889628": [
+@@ -4236,6 +4230,11 @@
+   "c92a0bab54261695": "Ответить на этот ответ",
+   "f6958f38dc87c712": "Ответвить от этого ответа",
+   "72f8e14b1246d224": "Ответить на этот ответ",
++  "e58fda8216f2ccfd": "Что сделать с изменениями файлов при повторной отправке?",
++  "713746f6d40f9ef1": "Диалог начиная с этого сообщения будет заменён. Восстановление файлов также отменит ваши изменения, сделанные после этого сообщения.",
++  "e336342fe8ba4102": "Диалог начиная с этого сообщения будет заменён. Восстановление недоступно, поэтому при повторной отправке текущие файлы сохранятся.",
++  "658df8b97864e7bb": "Восстановить файлы и отправить",
++  "9949d7412a5abc85": "Сохранить файлы и отправить",
+   "01d7728e893c281d": "Перейти к сообщению: {text}",
+   "e5428a0daffa236c": "Сообщение пользователя",
+   "d18107d06a0eb562": "Предыдущий ход",
+@@ -4270,6 +4269,7 @@
+   "ae3f487ebde9db74": "Сначала было в очереди, затем стало корректировкой активного хода",
+   "4f2ec8c81b4efb22": "Скорректировало активный ход",
+   "d201a2c11fc08817": "Редактировать отсюда",
++  "6aa69394ec8e9be1": "Редактировать сообщение",
+   "5b30ae788fdc4fd0": "Отправка…",
+   "b8e1cd0265566143": [
+     "Скачать ",
+@@ -4571,9 +4571,6 @@
+   "dbba8f04cf03156e": "Не удалось отправить сообщение.",
+   "9cdf086fb271934e": "Разрешить повтор",
+   "7031b06fd2df3b6c": "Возможно, предыдущий запрос уже выполняется. Сначала проверьте его тред. Разрешить повторную отправку, которая может создать дубликат треда?",
+-  "d226ee7c6afacac0": "Дождитесь подготовки вложений перед откатом.",
+-  "164ccef2f6f8f0e0": "Освободите в поле ввода место для вложений этого сообщения перед откатом.",
+-  "52d1d17102318779": "Не удалось откатить состояние треда.",
+   "08160f331ed1531c": "Провайдер для {model} недоступен.",
+   "59362fd6489ab5f9": "Не удалось загрузить вложение ''{name}''.",
+   "830b6f7255a7ca18": "Этот сервер не поддерживает вложения файлов.",
+@@ -4819,6 +4816,8 @@
+   "e7f9e31365849b9f": "Этот провайдер не поддерживает откат истории беседы. Начните новый тред.",
+   "31db4cf2474ef2a6": "Переподключите {environment} перед откатом к контрольным точкам.",
+   "f7d2db726b3a9316": "Прервите текущий ход перед откатом к контрольным точкам.",
++  "d40b1bbed6895ce7": "Восстановление файлов из этой контрольной точки недоступно.",
++  "69c17a5b4e37fd23": "Не удалось повторно отправить отредактированное сообщение.",
+   "91688a74a7e860d1": "Не удалось ответвить этот ответ.",
+   "831fba9edc1a8f8c": "Ответвление создано, но данные его треда не дошли до этого клиента. Переподключитесь и попробуйте открыть его с боковой панели.",
+   "8e1c73b331981bf5": "Лимиты использования недоступны для этого провайдера",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..bbb00aba8d9e778a5963dfd391f3773677145ee2 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "Uppdatera Antigravity-modellerna i leverantörsinställningarna innan du skickar.",
+   "942a831ce4a4171e": "Den Antigravity-modellen är inte längre tillgänglig. Välj en annan modell.",
+   "b4c2c30643ea00bb": "Miljön returnerade en ogiltig URL för bilagan.",
+-  "8477c16ec31f6477": "Det här meddelandet har en bilaga som inte kan återställas.",
+-  "b64793806a0a34cc": "Kunde inte återställa bilagan: {name}",
+   "234136732961387e": "{count, plural, =1 {Utgången terminalkontext skickas inte} other {Utgångna terminalkontexter skickas inte}}",
+   "15d397024f5ae47b": "{count, plural, =1 {Ta bort den eller lägg till den igen för att ta med terminalutdata.} other {Ta bort dem eller lägg till dem igen för att ta med terminalutdata.}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {Utgången terminalkontext utelämnades från meddelandet} other {Utgångna terminalkontexter utelämnades från meddelandet}}",
+@@ -3313,10 +3311,6 @@
+   ],
+   "2ce5b965862599cc": "Du har ändringar som inte är committade. De följer med till den andra grenen eller blockerar bytet om de är i konflikt.",
+   "c4280e2f9ff0e319": "Byt gren",
+-  "2369e92930d2d529": "Redigera härifrån?",
+-  "2028c02df18f2ccd": "Spola tillbaka chatten till före det här meddelandet. Din prompt och dina bilagor kommer tillbaka till inmatningsfältet. ”Återställ även filer” ångrar också dina egna ändringar.",
+-  "95021203628e2378": "Återställ även filer",
+-  "c1c9ebabaa960f8c": "Återställ och behåll ändringar",
+   "359e36da660f2c59": "Godkännande från {title}",
+   "8d9617edf6eee5b9": "Det gick inte att skicka godkännandebeslutet.",
+   "160ead9e70889628": [
+@@ -4237,6 +4231,11 @@
+   "c92a0bab54261695": "Svara på det här svaret",
+   "f6958f38dc87c712": "Forka från det här svaret",
+   "72f8e14b1246d224": "Svara på det här svaret",
++  "e58fda8216f2ccfd": "Hur ska filändringarna hanteras när meddelandet skickas igen?",
++  "713746f6d40f9ef1": "Konversationen ersätts från och med det här meddelandet. Om du återställer filerna ångras även dina egna ändringar sedan dess.",
++  "e336342fe8ba4102": "Konversationen ersätts från och med det här meddelandet. Det går inte att återställa filerna, så de nuvarande filerna behålls.",
++  "658df8b97864e7bb": "Återställ filer och skicka",
++  "9949d7412a5abc85": "Behåll filer och skicka",
+   "01d7728e893c281d": "Hoppa till meddelande: {text}",
+   "e5428a0daffa236c": "Användarmeddelande",
+   "d18107d06a0eb562": "Föregående omgång",
+@@ -4271,6 +4270,7 @@
+   "ae3f487ebde9db74": "Köades först och flyttades sedan upp för att styra om den aktiva omgången",
+   "4f2ec8c81b4efb22": "Styrde om den aktiva omgången",
+   "d201a2c11fc08817": "Redigera härifrån",
++  "6aa69394ec8e9be1": "Redigera meddelande",
+   "5b30ae788fdc4fd0": "Skickar…",
+   "b8e1cd0265566143": [
+     "Ladda ned ",
+@@ -4572,9 +4572,6 @@
+   "dbba8f04cf03156e": "Det gick inte att skicka meddelandet.",
+   "9cdf086fb271934e": "Tillåt nytt försök",
+   "7031b06fd2df3b6c": "Den tidigare begäran kan redan köras. Kontrollera dess tråd först. Tillåta en ny sändning som kan skapa en dubblettråd?",
+-  "d226ee7c6afacac0": "Vänta tills bilagorna är förberedda innan du spolar tillbaka.",
+-  "164ccef2f6f8f0e0": "Gör plats för meddelandets bilagor i inmatningsfältet innan du spolar tillbaka.",
+-  "52d1d17102318779": "Det gick inte att återställa trådens tillstånd.",
+   "08160f331ed1531c": "Leverantören för {model} är inte tillgänglig.",
+   "59362fd6489ab5f9": "Bilagan ''{name}'' kunde inte laddas upp.",
+   "830b6f7255a7ca18": "Den här servern stöder inte filbilagor.",
+@@ -4820,6 +4817,8 @@
+   "e7f9e31365849b9f": "Den här leverantören stöder inte att konversationshistoriken återställs. Starta en ny tråd i stället.",
+   "31db4cf2474ef2a6": "Återanslut {environment} innan du återställer kontrollpunkter.",
+   "f7d2db726b3a9316": "Avbryt den aktuella omgången innan du återställer kontrollpunkter.",
++  "d40b1bbed6895ce7": "Filerna kan inte återställas från den här kontrollpunkten.",
++  "69c17a5b4e37fd23": "Det gick inte att skicka det redigerade meddelandet igen.",
+   "91688a74a7e860d1": "Det gick inte att forka det här svaret.",
+   "831fba9edc1a8f8c": "Forken skapades, men dess tråddata nådde inte den här klienten. Återanslut och försök öppna den från sidofältet.",
+   "8e1c73b331981bf5": "Användningsgränser är inte tillgängliga för den här leverantören",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..e4cd6dcb6f5d0a31d8770471ee4adc8ebcbf94f4 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -1668,8 +1668,6 @@
+   "258cd8157d6edbea": "发送前请先在提供方设置中刷新 Antigravity 模型。",
+   "942a831ce4a4171e": "该 Antigravity 模型已不可用。请选择其他模型。",
+   "b4c2c30643ea00bb": "环境返回了无效的附件 URL。",
+-  "8477c16ec31f6477": "此消息包含无法恢复的附件。",
+-  "b64793806a0a34cc": "无法恢复附件：{name}",
+   "234136732961387e": "{count, plural, =1 {不会发送已过期的终端上下文} other {不会发送已过期的终端上下文}}",
+   "15d397024f5ae47b": "{count, plural, =1 {请将其移除或重新添加，以包含终端输出。} other {请将其移除或重新添加，以包含终端输出。}}",
+   "b0e8f0739695c32d": "{count, plural, =1 {已从消息中省略过期的终端上下文} other {已从消息中省略过期的终端上下文}}",
+@@ -3318,10 +3316,6 @@
+   ],
+   "2ce5b965862599cc": "你有未提交的改动。它们会带到另一个分支；如果有冲突，则无法切换。",
+   "c4280e2f9ff0e319": "切换分支",
+-  "2369e92930d2d529": "从这里开始编辑？",
+-  "2028c02df18f2ccd": "对话将回退到这条消息之前，你的提示词和附件会回到输入框。选择“同时还原文件”还会撤销你自己做的修改。",
+-  "95021203628e2378": "同时还原文件",
+-  "c1c9ebabaa960f8c": "回退并保留改动",
+   "359e36da660f2c59": "来自 {title} 的审批",
+   "8d9617edf6eee5b9": "无法提交审批决定。",
+   "160ead9e70889628": [
+@@ -4243,6 +4237,11 @@
+   "c92a0bab54261695": "回复这条回答",
+   "f6958f38dc87c712": "从这条回复分叉",
+   "72f8e14b1246d224": "回复这条回答",
++  "e58fda8216f2ccfd": "重新发送时，如何处理文件改动？",
++  "713746f6d40f9ef1": "从这条消息起的对话将被替换。还原文件也会撤销你从这条消息起对文件所做的修改。",
++  "e336342fe8ba4102": "从这条消息起的对话将被替换。当前无法还原文件，重新发送会保留现有文件。",
++  "658df8b97864e7bb": "还原文件并发送",
++  "9949d7412a5abc85": "保留文件并发送",
+   "01d7728e893c281d": "跳转到消息：{text}",
+   "e5428a0daffa236c": "用户消息",
+   "d18107d06a0eb562": "上一轮",
+@@ -4277,6 +4276,7 @@
+   "ae3f487ebde9db74": "原本在排队，随后改为引导当前这一轮",
+   "4f2ec8c81b4efb22": "引导了当前这一轮",
+   "d201a2c11fc08817": "从这里编辑",
++  "6aa69394ec8e9be1": "编辑消息",
+   "5b30ae788fdc4fd0": "正在发送…",
+   "b8e1cd0265566143": [
+     "下载 ",
+@@ -4578,9 +4578,6 @@
+   "dbba8f04cf03156e": "无法发送消息。",
+   "9cdf086fb271934e": "允许重试",
+   "7031b06fd2df3b6c": "上一次请求可能已在运行，请先查看它的会话。仍要再次发送吗？这可能会产生重复的会话。",
+-  "d226ee7c6afacac0": "请等附件准备完成后再回退。",
+-  "164ccef2f6f8f0e0": "回退前请在输入框中为这条消息的附件腾出位置。",
+-  "52d1d17102318779": "无法回退会话状态。",
+   "08160f331ed1531c": "{model} 的提供方不可用。",
+   "59362fd6489ab5f9": "附件 ''{name}'' 上传失败。",
+   "830b6f7255a7ca18": "这个服务器不支持文件附件。",
+@@ -4826,6 +4823,8 @@
+   "e7f9e31365849b9f": "这个提供方不支持回退对话记录。请改为新建会话。",
+   "31db4cf2474ef2a6": "请先重新连接 {environment}，再回退检查点。",
+   "f7d2db726b3a9316": "请先中断当前这一轮，再回退检查点。",
++  "d40b1bbed6895ce7": "此检查点无法还原文件。",
++  "69c17a5b4e37fd23": "未能重新发送编辑后的消息。",
+   "91688a74a7e860d1": "无法从这条回复分叉。",
+   "831fba9edc1a8f8c": "分叉已创建，但会话数据没有同步到此客户端。请重新连接，然后从侧边栏打开。",
+   "8e1c73b331981bf5": "这个提供方无法查看用量限制",
+diff --git a/apps/web/test/fakeEnvironment.ts b/apps/web/test/fakeEnvironment.ts
+index 7fd89bf48a9f5af1ce91aa3006acde5f5747fb28..77f39b772f25c53443bb02f1d50dca34a7ec0a5a 100644
+--- a/apps/web/test/fakeEnvironment.ts
++++ b/apps/web/test/fakeEnvironment.ts
+@@ -235,6 +235,8 @@ export interface FakeThread {
+   readonly modelSelection?: ModelSelection;
+   /** The first is the thread's active provider thread. */
+   readonly providerThreads?: ReadonlyArray<OrchestrationV2ProviderThread>;
++  readonly checkpoints?: OrchestrationV2ThreadProjection["checkpoints"];
++  readonly worktreePath?: string;
+   readonly issues?: OrchestrationV2ThreadShell["issues"];
+   readonly runs: ReadonlyArray<OrchestrationV2Run>;
+   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
+@@ -321,7 +323,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
+     runtimeMode: "full-access",
+     interactionMode: "default",
+     branch: "main",
+-    worktreePath: null,
++    worktreePath: thread.worktreePath ?? null,
+     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
+     ...(thread.issues === undefined ? {} : { issues: thread.issues }),
+     lineage: {
+@@ -400,7 +402,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
+     plans: [],
+     turnItems: [...thread.items],
+     checkpointScopes: [],
+-    checkpoints: [],
++    checkpoints: [...(thread.checkpoints ?? [])],
+     contextHandoffs: [],
+     contextTransfers: [],
+     visibleTurnItems,

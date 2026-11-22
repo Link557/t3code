@@ -1,0 +1,279 @@
+diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
+index 86a2d04c53eef75237ac0afdb71e0cc8cba8955b..70c21576f1072af47672b90fb048107364d6cde9 100644
+--- a/apps/web/src/components/Sidebar.tsx
++++ b/apps/web/src/components/Sidebar.tsx
+@@ -530,6 +530,7 @@ function useSidebarThreads(input: {
+   const visibleWorkingThreads = workingShelfExpanded
+     ? workingThreads
+     : routeThreadOnly(workingThreads, routeRowThreadKey);
++  const [fullFolders, setFullFolders] = useState<ReadonlySet<string>>(() => new Set());
+   const projectFolders =
+     folderGroups === null
+       ? null
+@@ -538,13 +539,28 @@ function useSidebarThreads(input: {
+             projectExpandedById,
+             sidebarFolderExpansionKeys(folder.group),
+           );
++          const full = fullFolders.has(folder.group.projectKey);
++          const moreCount = Math.max(0, folder.threads.length - 5);
++          let visible = folder.threads;
++          if (!collapsed && !full && moreCount > 0) {
++            visible = folder.threads.slice(0, 5);
++            if (
++              routeRowThreadKey &&
++              !visible.some((thread) => threadShellKey(thread) === routeRowThreadKey)
++            ) {
++              const selected = folder.threads.find(
++                (thread) => threadShellKey(thread) === routeRowThreadKey,
++              );
++              if (selected) visible[4] = selected;
++            }
++          }
+           return {
+             group: folder.group,
++            full,
++            moreCount,
+             collapsed,
+             // A closed folder still shows the open thread, and hints at the rest.
+-            threads: collapsed
+-              ? routeThreadOnly(folder.threads, routeRowThreadKey)
+-              : folder.threads,
++            threads: collapsed ? routeThreadOnly(folder.threads, routeRowThreadKey) : visible,
+             hiddenThreads: collapsed
+               ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
+               : EMPTY_THREADS,
+@@ -596,7 +612,20 @@ function useSidebarThreads(input: {
+     workingShelfExpanded,
+     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
+     projectFolders,
++    toggleFullFolder: (key: string) =>
++      setFullFolders((current) => {
++        const next = new Set(current);
++        if (next.has(key)) next.delete(key);
++        else next.add(key);
++        return next;
++      }),
+     toggleProjectFolder: (group: SidebarProjectSnapshot) => {
++      setFullFolders((current) => {
++        if (!current.has(group.projectKey)) return current;
++        const next = new Set(current);
++        next.delete(group.projectKey);
++        return next;
++      });
+       const keys = sidebarFolderExpansionKeys(group);
+       setProjectExpanded(keys, !resolveProjectExpanded(projectExpandedById, keys));
+     },
+@@ -1331,6 +1360,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
+     toggleWorkingShelf,
+     projectFolders,
+     toggleProjectFolder,
++    toggleFullFolder,
+     renderedSettledThreads,
+     visibleSnoozedThreads,
+     visibleWorkingThreads,
+@@ -3555,6 +3585,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
+                               <SidebarProjectFolderHeader
+                                 key={`project-folder:${folder.group.projectKey}`}
+                                 group={folder.group}
++                                environmentBadge={
++                                  <ProjectEnvironmentBadge
++                                    group={folder.group}
++                                    primaryEnvironmentId={primaryEnvironmentId}
++                                    machineByEnvironmentId={environmentMachineById}
++                                  />
++                                }
+                                 collapsed={folder.collapsed}
+                                 hiddenThreads={folder.hiddenThreads}
+                                 onToggle={toggleProjectFolder}
+@@ -3571,6 +3608,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
+                                 ),
+                               );
+                             }
++                            if (!folder.collapsed && folder.moreCount > 0) {
++                              items.push(
++                                <li key={`more:${folder.group.projectKey}`} className="list-none">
++                                  <button
++                                    type="button"
++                                    aria-expanded={folder.full}
++                                    data-sidebar-row={`folder-more:${folder.group.projectKey}`}
++                                    className="block w-full rounded-(--control-radius) py-1 pl-9 text-left text-xs text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
++                                    onClick={() => toggleFullFolder(folder.group.projectKey)}
++                                  >
++                                    {folder.full
++                                      ? gt("Show only 5 threads")
++                                      : gt(
++                                          "{count, plural, one {Show # more thread} other {Show # more threads}}",
++                                          { count: folder.moreCount },
++                                        )}
++                                  </button>
++                                </li>,
++                              );
++                            }
+                           }
+                           continue;
+                         }
+diff --git a/apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx b/apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx
+index 7ebda48e5b89af1af91ad0c438155fc35fef10f1..feda237f0342ff60996a7549b1461f076d92ff98 100644
+--- a/apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx
++++ b/apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx
+@@ -3,7 +3,7 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
+ import type { ContextMenuSource } from "@t3tools/contracts";
+ import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
+ import { msg, T, useGT, useMessages, Var } from "gt-react";
+-import { memo } from "react";
++import { memo, type ReactNode } from "react";
+ 
+ import { cn } from "~/lib/utils";
+ import { contextMenuSourceOf } from "../../contextMenuSource";
+@@ -40,6 +40,7 @@ export function sidebarFolderRowId(projectKey: string) {
+  */
+ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
+   group: SidebarProjectSnapshot;
++  environmentBadge: ReactNode;
+   collapsed: boolean;
+   hiddenThreads: readonly EnvironmentThreadShell[];
+   onToggle: (group: SidebarProjectSnapshot) => void;
+@@ -89,8 +90,11 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
+         className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+       >
+         <ProjectFavicon project={group} className="size-4 shrink-0" />
+-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
+-          {group.displayName}
++        <span className="flex min-w-0 flex-1 items-center gap-1.5 pr-5">
++          <span className="truncate text-sm font-medium text-sidebar-foreground/90">
++            {group.displayName}
++          </span>
++          {props.environmentBadge}
+         </span>
+         {dot ? (
+           <span className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME[dot])}>
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5439ee39688eade31897af144b50a5f5383f290e..52c1c1265feffdfe8539e633dbb025421d8a9d52 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "Keine aktiven Threads in {project}",
+   "e3ed00af71363d39": "Noch keine Threads in diesen Projekten",
+   "981053bcf95b3d3f": "Noch keine Threads in {project}",
++  "31b5e4cc1abbdf35": "Nur 5 Threads anzeigen",
++  "79164203621b7d49": "{count, plural, one {# weiteren Thread anzeigen} other {# weitere Threads anzeigen}}",
+   "151767f20fa67c48": "Angeheftet",
+   "db8f17154d4f0cfa": "Aktiv",
+   "9578dc3e84f82081": "In Arbeit",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index c378e66342505d9a5fa15fb0767a74aad29325d5..e32df45a9098707abc6129dcd05fd750c5af06c9 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "No active threads in {project}",
+   "e3ed00af71363d39": "No threads in these projects yet",
+   "981053bcf95b3d3f": "No threads in {project} yet",
++  "31b5e4cc1abbdf35": "Show only 5 threads",
++  "79164203621b7d49": "{count, plural, one {Show # more thread} other {Show # more threads}}",
+   "151767f20fa67c48": "Pinned",
+   "db8f17154d4f0cfa": "Active",
+   "9578dc3e84f82081": "Working",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 1538850527718730a5137e340ce7f8f44d40e643..3ebce05600f32d3fad41fd11673373d3b5009a63 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "No hay hilos activos en {project}",
+   "e3ed00af71363d39": "Aún no hay hilos en estos proyectos",
+   "981053bcf95b3d3f": "Aún no hay hilos en {project}",
++  "31b5e4cc1abbdf35": "Mostrar solo 5 hilos",
++  "79164203621b7d49": "{count, plural, one {Mostrar # hilo más} other {Mostrar # hilos más}}",
+   "151767f20fa67c48": "Fijados",
+   "db8f17154d4f0cfa": "Activos",
+   "9578dc3e84f82081": "En curso",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..e536f577f09bb2f139485abc30d1a32041ce776a 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "Aucun fil actif dans {project}",
+   "e3ed00af71363d39": "Pas encore de fil dans ces projets",
+   "981053bcf95b3d3f": "Pas encore de fil dans {project}",
++  "31b5e4cc1abbdf35": "Afficher seulement 5 fils",
++  "79164203621b7d49": "{count, plural, one {Afficher # fil de plus} other {Afficher # fils de plus}}",
+   "151767f20fa67c48": "Épinglés",
+   "db8f17154d4f0cfa": "Actifs",
+   "9578dc3e84f82081": "En cours",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index da6a34749df883d48fa5ec7db9008751c412cd09..64f08b3ed3c4d0215ccef13074606407421aa622 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -2463,6 +2463,8 @@
+   "0b58e43fd858408a": "{project} にアクティブなスレッドはありません",
+   "e3ed00af71363d39": "これらのプロジェクトにはまだスレッドがありません",
+   "981053bcf95b3d3f": "{project} にはまだスレッドがありません",
++  "31b5e4cc1abbdf35": "5 件のスレッドのみ表示",
++  "79164203621b7d49": "残り {count} 件のスレッドを表示",
+   "151767f20fa67c48": "ピン留め済み",
+   "db8f17154d4f0cfa": "アクティブ",
+   "9578dc3e84f82081": "作業中",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..35b19a9af607d3cbc24df1a8dfd20a3e25634a36 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -2464,6 +2464,8 @@
+   "0b58e43fd858408a": "{project}에 활성 스레드가 없습니다",
+   "e3ed00af71363d39": "이 프로젝트들에 아직 스레드가 없습니다",
+   "981053bcf95b3d3f": "{project}에 아직 스레드가 없습니다",
++  "31b5e4cc1abbdf35": "스레드 5개만 표시",
++  "79164203621b7d49": "나머지 스레드 {count}개 표시",
+   "151767f20fa67c48": "고정됨",
+   "db8f17154d4f0cfa": "활성",
+   "9578dc3e84f82081": "작업 중",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..f3ed4ea1768bbf829e2ba3a0cc4e9d8cbf2704c9 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "Nenhuma thread ativa em {project}",
+   "e3ed00af71363d39": "Ainda não há threads nestes projetos",
+   "981053bcf95b3d3f": "Ainda não há threads em {project}",
++  "31b5e4cc1abbdf35": "Mostrar apenas 5 conversas",
++  "79164203621b7d49": "{count, plural, one {Mostrar mais # conversa} other {Mostrar mais # conversas}}",
+   "151767f20fa67c48": "Fixadas",
+   "db8f17154d4f0cfa": "Ativas",
+   "9578dc3e84f82081": "Trabalhando",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..8ba2ecacb679ca6cc7123c09c3294c8039a67e9c 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "В {project} нет активных тредов",
+   "e3ed00af71363d39": "В этих проектах пока нет тредов",
+   "981053bcf95b3d3f": "В {project} пока нет тредов",
++  "31b5e4cc1abbdf35": "Показать только 5 обсуждений",
++  "79164203621b7d49": "{count, plural, one {Показать ещё # обсуждение} few {Показать ещё # обсуждения} other {Показать ещё # обсуждений}}",
+   "151767f20fa67c48": "Закреплённые",
+   "db8f17154d4f0cfa": "Активные",
+   "9578dc3e84f82081": "В работе",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..58a53e10b3175f68ce276682da0d8a0f0cb5f644 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -2465,6 +2465,8 @@
+   "0b58e43fd858408a": "Inga aktiva trådar i {project}",
+   "e3ed00af71363d39": "Inga trådar i de här projekten än",
+   "981053bcf95b3d3f": "Inga trådar i {project} än",
++  "31b5e4cc1abbdf35": "Visa endast 5 trådar",
++  "79164203621b7d49": "{count, plural, one {Visa ytterligare # tråd} other {Visa ytterligare # trådar}}",
+   "151767f20fa67c48": "Fästa",
+   "db8f17154d4f0cfa": "Aktiva",
+   "9578dc3e84f82081": "Arbetar",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..9d49f837736256b86fdcb718a5e5a089accf0f33 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -2469,6 +2469,8 @@
+   "0b58e43fd858408a": "{project} 中没有活跃会话",
+   "e3ed00af71363d39": "这些项目中暂无会话",
+   "981053bcf95b3d3f": "{project} 中暂无会话",
++  "31b5e4cc1abbdf35": "只显示 5 条会话",
++  "79164203621b7d49": "显示其余 {count} 条会话",
+   "151767f20fa67c48": "已置顶",
+   "db8f17154d4f0cfa": "活跃",
+   "9578dc3e84f82081": "运行中",

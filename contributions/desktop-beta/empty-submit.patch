@@ -1,0 +1,457 @@
+diff --git a/apps/web/src/components/ChatView.browser.test.tsx b/apps/web/src/components/ChatView.browser.test.tsx
+index 96a870efeb9eaee14d68876b4e7173dfa5584a75..c7689da544ea013d20aeb7d86cf5e846fd4fd21f 100644
+--- a/apps/web/src/components/ChatView.browser.test.tsx
++++ b/apps/web/src/components/ChatView.browser.test.tsx
+@@ -561,6 +561,63 @@ it("a stashed prompt ending in a file chip restores with the chip", async () =>
+   await expect.element(chip).toBeVisible();
+ });
+ 
++it.each(["enabled", "quiet", "attachment"] as const)(
++  "honors the empty repeated-send notice setting (%s)",
++  async (mode) => {
++    const enabled = mode === "enabled";
++    const thread = threadWithHistory(`repeat-send-${mode}`, 1);
++    using _environment = installFakeEnvironment([thread], {
++      acceptCommands: true,
++      holdCommand: (command) => command.type === "message.dispatch",
++    });
++    __setClientSettingsForTests({
++      ...DEFAULT_CLIENT_SETTINGS,
++      showEmptyDuplicateSendNotice: enabled,
++      onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
++    });
++    const router = getRouter(
++      createMemoryHistory({
++        initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`],
++      }),
++    );
++    await router.load();
++    await using _app = await render(<AppRoot router={router} />, {
++      // AppRoot brings its own router.
++      router: false,
++    });
++    await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
++    const editor = page.getByTestId("composer-editor");
++    await userEvent.click(editor);
++    await userEvent.keyboard("First message{Enter}");
++    const dispatches = () =>
++      dispatchedCommands().filter((command) => command.type === "message.dispatch");
++    await vi.waitFor(() => expect(dispatches()).toHaveLength(1));
++    using _uploads = acceptAttachmentUploads();
++    if (mode === "attachment") {
++      const clipboardData = new DataTransfer();
++      clipboardData.items.add(new File([PNG], "sample.png", { type: "image/png" }));
++      editor
++        .element()
++        .dispatchEvent(
++          new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
++        );
++      await expect.element(page.getByRole("img", { name: "sample.png" })).toBeVisible();
++    }
++    await userEvent.keyboard("{Enter}");
++    const notice = page.getByText("Still sending your previous message.", { exact: true });
++    if (enabled || mode === "attachment") {
++      await expect.element(notice).toBeVisible();
++    } else {
++      expect(notice.elements()).toHaveLength(0);
++      await userEvent.keyboard("Second message{Enter}");
++      await expect.element(notice).toBeVisible();
++      await expect.element(editor).toHaveTextContent("Second message");
++    }
++    expect(dispatches()).toHaveLength(1);
++    await rejectPendingCommand("Test send finished.");
++  },
++);
++
+ it("a rejected send leaves the timeline when a new draft was typed meanwhile", async () => {
+   const thread = threadWithHistory("rejected-send", 1);
+   using _environment = installFakeEnvironment([thread], {
+diff --git a/apps/web/src/components/chat/useComposerSend.ts b/apps/web/src/components/chat/useComposerSend.ts
+index 43f2082e7b7e9c6fa5055bda1457c3104e0409c9..04d044176d39fbff410299f61a8d986b5baa1abb 100644
+--- a/apps/web/src/components/chat/useComposerSend.ts
++++ b/apps/web/src/components/chat/useComposerSend.ts
+@@ -96,7 +96,7 @@ import {
+ import { environmentServerConfigsAtom } from "../../state/server";
+ import { threadEnvironment } from "../../state/threads";
+ import { runMobileComposerTransition } from "./draftHeroTransition";
+-import { useClientSettingsHydrated } from "../../hooks/useSettings";
++import { getClientSettings, useClientSettingsHydrated } from "../../hooks/useSettings";
+ import { useStableCallback } from "../../hooks/useStableCallback";
+ import { environmentPresentations } from "../../state/presentation";
+ import {
+@@ -481,7 +481,11 @@ export function useComposerSend(input: ComposerSendInput) {
+     if ((isSendBusy && !sendQueuesBehindSetup) || sendInFlightRef.current) {
+       if (directAnnotation) {
+         notifyDirectAnnotationAttached();
+-      } else {
++      } else if (
++        getClientSettings().showEmptyDuplicateSendNotice ||
++        promptAtSend.trim().length > 0 ||
++        draftHasNonPromptContent(composerDraftTarget)
++      ) {
+         toastManager.add(
+           stackedThreadToast({
+             type: "info",
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index e0a12417848fa097a20dd7309b5e3c8467a95bf5..c962351051d1652d744bff793f960582c8818ed5 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -573,6 +573,9 @@ export function useSettingsRestore(onRestored?: () => void) {
+     ...(settings.composerRichTextEnabled !== DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled
+       ? [gt("Rich text composer")]
+       : []),
++    ...(!settings.showEmptyDuplicateSendNotice
++      ? [gt("Show duplicate-send notice for empty input")]
++      : []),
+     ...(settings.sendShortcut !== DEFAULT_UNIFIED_SETTINGS.sendShortcut
+       ? [gt("Send shortcut")]
+       : []),
+@@ -708,6 +711,7 @@ export function useSettingsRestore(onRestored?: () => void) {
+       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
+       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
+       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
++      showEmptyDuplicateSendNotice: DEFAULT_UNIFIED_SETTINGS.showEmptyDuplicateSendNotice,
+       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
+       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
+       toolCallVisibility: DEFAULT_UNIFIED_SETTINGS.toolCallVisibility,
+@@ -1300,6 +1304,21 @@ export function ChatSettingsPanel() {
+             </Select>
+           }
+         />
++        <SettingsRow
++          {...setting("empty-duplicate-send-notice")}
++          description={gt(
++            "Show a reminder when you submit empty input while the previous message is still sending.",
++          )}
++          control={
++            <Switch
++              aria-label={gt("Show duplicate-send notice for empty input")}
++              checked={settings.showEmptyDuplicateSendNotice}
++              onCheckedChange={(showEmptyDuplicateSendNotice) =>
++                updateSettings({ showEmptyDuplicateSendNotice })
++              }
++            />
++          }
++        />
+         <AdvancedSettings targetIds={[setting("skills-in-slash-menu").id]}>
+           <SettingsRow
+             {...setting("skills-in-slash-menu")}
+diff --git a/apps/web/src/components/settings/settingsSearch.ts b/apps/web/src/components/settings/settingsSearch.ts
+index 51ac4d7e19add280a237d4f21d97ee6c4d39bdf4..1ccf893a6e54a6c6a3c1de7c40de06196c46cb58 100644
+--- a/apps/web/src/components/settings/settingsSearch.ts
++++ b/apps/web/src/components/settings/settingsSearch.ts
+@@ -793,6 +793,12 @@ export const SETTINGS_SEARCH_ITEMS = [
+     to: "/settings/chat",
+     searchTerms: [msg("composer rich text tiptap bold italic markdown styled wysiwyg")],
+   },
++  {
++    id: "empty-duplicate-send-notice",
++    title: msg("Show duplicate-send notice for empty input"),
++    to: "/settings/chat",
++    searchTerms: [msg("quiet empty enter repeated send reminder")],
++  },
+   {
+     id: "send-shortcut",
+     title: msg("Send shortcut"),
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5439ee39688eade31897af144b50a5f5383f290e..edcc6831f15284802c3d9cc13e31a4e469a411de 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -9791,6 +9791,7 @@
+   "71d047b3f6ea9497": "Pull-Request- und Änderungs-Panels proaktiv öffnen",
+   "4b46043fd3700c17": "Skills im Slash-Menü anzeigen",
+   "2407d5d61e7f7206": "Rich-Text-Eingabefeld",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Tastenkürzel zum Senden",
+   "6163f91bddf474ae": "Verhalten bei Folgenachrichten",
+   "856812e7e1fc445e": "Tool-Aufrufe im Chat",
+@@ -9841,6 +9842,7 @@
+   "f9251f92691626cd": "Rich-Text-Eingabefeld auf Standard zurücksetzen",
+   "b59ca5c465dbe742": "Lege fest, wann Enter einen Prompt sendet oder eine neue Zeile einfügt",
+   "147e9953f6fc550d": "Tastenkürzel zum Senden auf Standard zurücksetzen",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Skills auch im /-Befehlsmenü anzeigen. Skills erscheinen immer, wenn du $ tippst.",
+   "950712602a01125d": "Skills im Slash-Menü auf Standard zurücksetzen",
+   "55534387a88d7a44": "Folgenachrichten",
+@@ -11560,6 +11562,7 @@
+   "7d0ab4cf50686d31": "proaktiv automatisch öffnen diff pull request pr rechter bereich agent abschluss",
+   "5256dd2ed3a24332": "befehlsmenü dollar $ slash /",
+   "ade91c8927c48175": "eingabefeld rich text tiptap fett kursiv markdown formatiert wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter return befehl strg ctrl mehrzeilig prompt neue zeile eingabefeld",
+   "9d1013084c46ecce": "warteschlange einreihen umlenken laufende runde senden standardverhalten eingabefeld",
+   "5b8b854de7ee6f4d": "installierte cli versionen neuer verfügbar codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index c378e66342505d9a5fa15fb0767a74aad29325d5..917d73b17177ae061fdac91c00f82c5e3b59329b 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -9800,6 +9800,7 @@
+   "71d047b3f6ea9497": "Open pull requests and changes panels proactively",
+   "4b46043fd3700c17": "Show skills in slash menu",
+   "2407d5d61e7f7206": "Rich text composer",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Send shortcut",
+   "6163f91bddf474ae": "Follow-up behavior",
+   "856812e7e1fc445e": "Tool calls in chat",
+@@ -9850,6 +9851,7 @@
+   "f9251f92691626cd": "Reset rich text composer to default",
+   "b59ca5c465dbe742": "Choose when Enter sends a prompt or inserts a new line",
+   "147e9953f6fc550d": "Reset send shortcut to default",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Also include skills in the / command menu. Skills always appear when you type $.",
+   "950712602a01125d": "Reset skills in slash menu to default",
+   "55534387a88d7a44": "Follow-ups",
+@@ -11568,6 +11570,7 @@
+   "7d0ab4cf50686d31": "proactive automatically open diff pull request pr right panel agent completion",
+   "5256dd2ed3a24332": "command menu dollar $ slash /",
+   "ade91c8927c48175": "composer rich text tiptap bold italic markdown styled wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter return command ctrl multiline prompt new line composer",
+   "9d1013084c46ecce": "queue steer running turn send default behavior composer",
+   "5b8b854de7ee6f4d": "installed cli versions newer available codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 1538850527718730a5137e340ce7f8f44d40e643..e2501480d9e8c8f6a6fd7157f7aa2fabf8044472 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -9788,6 +9788,7 @@
+   "71d047b3f6ea9497": "Abrir los paneles de pull requests y cambios de forma proactiva",
+   "4b46043fd3700c17": "Mostrar skills en el menú de barra",
+   "2407d5d61e7f7206": "Cuadro de mensaje con texto enriquecido",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Atajo de envío",
+   "6163f91bddf474ae": "Comportamiento de los seguimientos",
+   "856812e7e1fc445e": "Llamadas a herramientas en el chat",
+@@ -9838,6 +9839,7 @@
+   "f9251f92691626cd": "Restablecer el cuadro de mensaje con texto enriquecido al valor predeterminado",
+   "b59ca5c465dbe742": "Elige cuándo Enter envía un prompt o inserta una línea nueva",
+   "147e9953f6fc550d": "Restablecer el atajo de envío al valor predeterminado",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Incluye también las skills en el menú de comandos /. Las skills siempre aparecen al escribir $.",
+   "950712602a01125d": "Restablecer las skills del menú de barra al valor predeterminado",
+   "55534387a88d7a44": "Seguimientos",
+@@ -11553,6 +11555,7 @@
+   "7d0ab4cf50686d31": "proactivo abrir automáticamente diff pull request pr panel derecho agente finalización",
+   "5256dd2ed3a24332": "menú de comandos dólar $ barra /",
+   "ade91c8927c48175": "cuadro mensaje compositor texto enriquecido tiptap negrita cursiva markdown con estilo wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter intro comando ctrl multilínea prompt nueva línea cuadro mensaje compositor",
+   "9d1013084c46ecce": "cola redirigir turno en ejecución enviar comportamiento predeterminado cuadro mensaje compositor",
+   "5b8b854de7ee6f4d": "instalado cli versiones más recientes disponibles codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..31a90b9fcc9f841b34c81e64b8b5de63330facae 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -9790,6 +9790,7 @@
+   "71d047b3f6ea9497": "Ouvrir proactivement les panneaux des pull requests et des modifications",
+   "4b46043fd3700c17": "Afficher les skills dans le menu slash",
+   "2407d5d61e7f7206": "Zone de saisie en texte enrichi",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Raccourci d’envoi",
+   "6163f91bddf474ae": "Comportement des relances",
+   "856812e7e1fc445e": "Appels d’outils dans la discussion",
+@@ -9840,6 +9841,7 @@
+   "f9251f92691626cd": "Réinitialiser la zone de saisie en texte enrichi à la valeur par défaut",
+   "b59ca5c465dbe742": "Choisissez quand Enter envoie un prompt ou insère une nouvelle ligne",
+   "147e9953f6fc550d": "Réinitialiser le raccourci d’envoi à la valeur par défaut",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Inclut aussi les skills dans le menu de commandes /. Les skills apparaissent toujours quand vous tapez $.",
+   "950712602a01125d": "Réinitialiser les skills dans le menu slash à la valeur par défaut",
+   "55534387a88d7a44": "Relances",
+@@ -11558,6 +11560,7 @@
+   "7d0ab4cf50686d31": "proactif ouvrir automatiquement diff pull request pr panneau de droite agent fin",
+   "5256dd2ed3a24332": "commande menu dollar $ slash /",
+   "ade91c8927c48175": "zone de saisie texte enrichi tiptap gras italique markdown stylé wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "entrée retour commande ctrl multiligne prompt nouvelle ligne zone de saisie",
+   "9d1013084c46ecce": "file d’attente réorienter tour en cours envoyer comportement par défaut zone de saisie",
+   "5b8b854de7ee6f4d": "installé cli versions plus récentes disponibles codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index da6a34749df883d48fa5ec7db9008751c412cd09..0f96bcd5485d8746d2df58c9a6da801b070673b7 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -9742,6 +9742,7 @@
+   "71d047b3f6ea9497": "プルリクエストと変更のパネルを自動的に開く",
+   "4b46043fd3700c17": "スラッシュメニューにスキルを表示",
+   "2407d5d61e7f7206": "リッチテキスト入力欄",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "送信ショートカット",
+   "6163f91bddf474ae": "フォローアップの動作",
+   "856812e7e1fc445e": "チャット内のツール呼び出し",
+@@ -9792,6 +9793,7 @@
+   "f9251f92691626cd": "リッチテキスト入力欄をデフォルトにリセット",
+   "b59ca5c465dbe742": "Enter でプロンプトを送信するか改行するかを選択します",
+   "147e9953f6fc550d": "送信ショートカットをデフォルトにリセット",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "/ コマンドメニューにもスキルを表示します。$ を入力したときは常にスキルが表示されます。",
+   "950712602a01125d": "スラッシュメニューのスキルをデフォルトにリセット",
+   "55534387a88d7a44": "フォローアップ",
+@@ -11508,6 +11510,7 @@
+   "7d0ab4cf50686d31": "自動 開く 差分 プルリクエスト PR 右パネル エージェント 完了 proactive",
+   "5256dd2ed3a24332": "コマンドメニュー ドル $ スラッシュ / command menu",
+   "ade91c8927c48175": "入力欄 リッチテキスト Tiptap 太字 斜体 Markdown スタイル WYSIWYG rich text",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "Enter Return Command Ctrl 複数行 プロンプト 改行 入力欄 shortcut",
+   "9d1013084c46ecce": "キュー 軌道修正 実行中 ターン 送信 デフォルト 動作 入力欄 queue steer",
+   "5b8b854de7ee6f4d": "インストール済み CLI バージョン 新しい 利用可能 Codex Claude Cursor Grok fx Kiro OpenCode update",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..90a495e6155c7797bc3e4b226cbfe77f5caae184 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -9745,6 +9745,7 @@
+   "71d047b3f6ea9497": "풀 리퀘스트 및 변경 사항 패널 미리 열기",
+   "4b46043fd3700c17": "슬래시 메뉴에 스킬 표시",
+   "2407d5d61e7f7206": "서식 있는 텍스트 입력창",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "보내기 단축키",
+   "6163f91bddf474ae": "후속 메시지 동작",
+   "856812e7e1fc445e": "채팅의 도구 호출",
+@@ -9795,6 +9796,7 @@
+   "f9251f92691626cd": "서식 있는 텍스트 입력창 기본값으로 재설정",
+   "b59ca5c465dbe742": "Enter 키로 프롬프트를 보낼지 새 줄을 넣을지 선택합니다",
+   "147e9953f6fc550d": "보내기 단축키 기본값으로 재설정",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "/ 명령 메뉴에도 스킬을 포함합니다. $를 입력하면 스킬이 항상 표시됩니다.",
+   "950712602a01125d": "슬래시 메뉴의 스킬 기본값으로 재설정",
+   "55534387a88d7a44": "후속 메시지",
+@@ -11505,6 +11507,7 @@
+   "7d0ab4cf50686d31": "자동 열기 변경 사항 풀 리퀘스트 PR 오른쪽 패널 에이전트 완료",
+   "5256dd2ed3a24332": "명령 메뉴 달러 $ 슬래시 /",
+   "ade91c8927c48175": "입력창 서식 있는 텍스트 tiptap 굵게 기울임 마크다운 스타일 wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter return command ctrl 여러 줄 프롬프트 새 줄 입력창",
+   "9d1013084c46ecce": "대기열 방향 조정 실행 중 턴 보내기 기본 동작 입력창",
+   "5b8b854de7ee6f4d": "설치된 CLI 버전 최신 사용 가능 Codex Claude Cursor Grok fx Kiro OpenCode",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..8f553c096d3ca39b7c2856974d1bc117d70158f3 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -9789,6 +9789,7 @@
+   "71d047b3f6ea9497": "Abrir os painéis de pull requests e alterações proativamente",
+   "4b46043fd3700c17": "Mostrar skills no menu de barra",
+   "2407d5d61e7f7206": "Editor de texto formatado",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Atalho de envio",
+   "6163f91bddf474ae": "Comportamento de mensagens de acompanhamento",
+   "856812e7e1fc445e": "Chamadas de ferramentas no chat",
+@@ -9839,6 +9840,7 @@
+   "f9251f92691626cd": "Redefinir o editor de mensagens com rich text para o padrão",
+   "b59ca5c465dbe742": "Escolha quando Enter envia um prompt ou insere uma nova linha",
+   "147e9953f6fc550d": "Redefinir o atalho de envio para o padrão",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Inclui também as skills no menu de comandos /. As skills sempre aparecem quando você digita $.",
+   "950712602a01125d": "Redefinir as skills no menu de barra para o padrão",
+   "55534387a88d7a44": "Mensagens de acompanhamento",
+@@ -11557,6 +11559,7 @@
+   "7d0ab4cf50686d31": "proativo abrir automaticamente diff pull request pr painel direito agente conclusão",
+   "5256dd2ed3a24332": "menu de comandos cifrão $ barra /",
+   "ade91c8927c48175": "editor de mensagens rich text tiptap negrito itálico markdown estilizado wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter return command ctrl várias linhas prompt nova linha editor de mensagens",
+   "9d1013084c46ecce": "fila enfileirar direcionar turno em execução enviar comportamento padrão editor de mensagens",
+   "5b8b854de7ee6f4d": "cli instaladas versões mais novas disponíveis codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..90a851b32e70ca8797033e0cda4cfcc641171890 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -9792,6 +9792,7 @@
+   "71d047b3f6ea9497": "Заранее открывать панели пул-реквестов и изменений",
+   "4b46043fd3700c17": "Показывать навыки в меню /",
+   "2407d5d61e7f7206": "Поле ввода с форматированием",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Сочетание для отправки",
+   "6163f91bddf474ae": "Поведение дополнительных сообщений",
+   "856812e7e1fc445e": "Вызовы инструментов в чате",
+@@ -9842,6 +9843,7 @@
+   "f9251f92691626cd": "Сбросить поле ввода с форматированием к значению по умолчанию",
+   "b59ca5c465dbe742": "Когда Enter отправляет промпт, а когда вставляет новую строку",
+   "147e9953f6fc550d": "Сбросить сочетание для отправки к значению по умолчанию",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Также показывать навыки в меню команд /. Навыки всегда появляются при вводе $.",
+   "950712602a01125d": "Сбросить навыки в меню / к значению по умолчанию",
+   "55534387a88d7a44": "Дополнительные сообщения",
+@@ -11558,6 +11560,7 @@
+   "7d0ab4cf50686d31": "заблаговременно автоматически открывать дифф пул-реквест pr правая панель агент завершение",
+   "5256dd2ed3a24332": "меню команд доллар $ слеш /",
+   "ade91c8927c48175": "поле ввода форматирование tiptap жирный курсив markdown стили wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter return command ctrl многострочный промпт новая строка поле ввода",
+   "9d1013084c46ecce": "очередь корректировка выполняющийся ход отправить поведение по умолчанию поле ввода",
+   "5b8b854de7ee6f4d": "установленные cli версии новее доступно codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..619db66270e78e4ec697c55cd7ebbda43d1d4386 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -9798,6 +9798,7 @@
+   "71d047b3f6ea9497": "Öppna panelerna för pull requests och ändringar proaktivt",
+   "4b46043fd3700c17": "Visa färdigheter i snedstrecksmenyn",
+   "2407d5d61e7f7206": "Inmatningsfält med formaterad text",
++  "634f677f4ae54ab3": "Show duplicate-send notice for empty input",
+   "64b8fd2c284c3137": "Kortkommando för att skicka",
+   "6163f91bddf474ae": "Beteende för uppföljningar",
+   "856812e7e1fc445e": "Verktygsanrop i chatten",
+@@ -9848,6 +9849,7 @@
+   "f9251f92691626cd": "Återställ inmatningsfält med formaterad text till standard",
+   "b59ca5c465dbe742": "Välj när Enter skickar en prompt eller infogar en ny rad",
+   "147e9953f6fc550d": "Återställ kortkommando för att skicka till standard",
++  "7557b9b6ee4f15ef": "Show a reminder when you submit empty input while the previous message is still sending.",
+   "4a1201bd18283940": "Ta även med färdigheter i kommandomenyn /. Färdigheter visas alltid när du skriver $.",
+   "950712602a01125d": "Återställ färdigheter i snedstrecksmenyn till standard",
+   "55534387a88d7a44": "Uppföljningar",
+@@ -11566,6 +11568,7 @@
+   "7d0ab4cf50686d31": "proaktiv öppna automatiskt diff pull request pr högerpanel agent slutförd",
+   "5256dd2ed3a24332": "kommandomeny dollar $ snedstreck /",
+   "ade91c8927c48175": "inmatningsfält formaterad text tiptap fet kursiv markdown formaterad wysiwyg",
++  "998d60eeadced376": "quiet empty enter repeated send reminder",
+   "34d74827c2a8b009": "enter retur command ctrl flera rader prompt ny rad inmatningsfält",
+   "9d1013084c46ecce": "kö styr om pågående omgång skicka standardbeteende inmatningsfält",
+   "5b8b854de7ee6f4d": "installerade cli versioner nyare tillgänglig codex claude cursor grok fx kiro opencode",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..6366ba18d6f149e5095d4a8d3aeea110d344f54c 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -9805,6 +9805,7 @@
+   "71d047b3f6ea9497": "自动打开 PR 与改动面板",
+   "4b46043fd3700c17": "在斜杠菜单中显示技能",
+   "2407d5d61e7f7206": "富文本输入框",
++  "634f677f4ae54ab3": "空输入时提示重复发送",
+   "64b8fd2c284c3137": "发送快捷键",
+   "6163f91bddf474ae": "追加消息行为",
+   "856812e7e1fc445e": "聊天中的工具调用",
+@@ -9855,6 +9856,7 @@
+   "f9251f92691626cd": "重置富文本输入框为默认值",
+   "b59ca5c465dbe742": "选择 Enter 是发送提示词还是插入换行",
+   "147e9953f6fc550d": "重置发送快捷键为默认值",
++  "7557b9b6ee4f15ef": "上一条消息仍在发送时，再次提交空输入会显示提醒。",
+   "4a1201bd18283940": "在 / 命令菜单中也显示技能。输入 $ 时始终会显示技能。",
+   "950712602a01125d": "重置斜杠菜单中的技能为默认值",
+   "55534387a88d7a44": "追加消息",
+@@ -11582,6 +11584,7 @@
+   "7d0ab4cf50686d31": "主动 自动打开 差异 PR pr 右侧面板 智能体 完成",
+   "5256dd2ed3a24332": "命令 菜单 美元 $ 斜杠 /",
+   "ade91c8927c48175": "输入框 富文本 tiptap 粗体 斜体 markdown 样式 所见即所得",
++  "998d60eeadced376": "安静 空输入 回车 重复发送 提醒",
+   "34d74827c2a8b009": "enter 回车 command ctrl 多行 提示词 换行 输入框",
+   "9d1013084c46ecce": "排队 引导 运行中 轮次 发送 默认行为 输入框",
+   "5b8b854de7ee6f4d": "已安装 cli 版本 更新 可用 codex claude cursor grok fx kiro opencode",
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 378b8af0e466f81d71e1c4efc130b41641edebf0..b46f959d95cf0c56cdd3bd9269cb52cc81598f0c 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -519,6 +519,9 @@ export const ClientSettingsSchema = Schema.Struct({
+   pullRequestLinksOpenInApp: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+ 
+   composerRichTextEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
++  showEmptyDuplicateSendNotice: Schema.Boolean.pipe(
++    Schema.withDecodingDefault(Effect.succeed(true)),
++  ),
+   sendShortcut: Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"]).pipe(
+     Schema.withDecodingDefault(Effect.succeed("enter")),
+   ),
+@@ -2099,6 +2102,7 @@ export const ClientSettingsPatch = Schema.Struct({
+   ),
+   pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
+   composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
++  showEmptyDuplicateSendNotice: Schema.optionalKey(Schema.Boolean),
+   sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
+   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
+   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),

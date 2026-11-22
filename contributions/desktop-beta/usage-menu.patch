@@ -1,0 +1,2711 @@
+diff --git a/apps/desktop/src/app/DesktopEnvironment.ts b/apps/desktop/src/app/DesktopEnvironment.ts
+index d5fed4b228b6f63c3637f34d8aec5d267626196b..6eb6aa27a441739db929117298e879fcbeaf1374 100644
+--- a/apps/desktop/src/app/DesktopEnvironment.ts
++++ b/apps/desktop/src/app/DesktopEnvironment.ts
+@@ -59,6 +59,7 @@ export class DesktopEnvironment extends Context.Service<
+     readonly clientAssetsDir: string;
+     readonly backendCwd: string;
+     readonly preloadPath: string;
++    readonly usagePanelPreloadPath: string;
+     readonly compileCachePath: string;
+     readonly appUpdateYmlPath: string;
+     readonly devServerUrl: Option.Option<URL>;
+@@ -211,6 +212,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
+     clientAssetsDir: path.join(serverRoot, "apps/server/dist/client"),
+     backendCwd: input.isPackaged ? homeDirectory : appRoot,
+     preloadPath: path.join(input.dirname, "preload.cjs"),
++    usagePanelPreloadPath: path.join(input.dirname, "usage-panel-preload.cjs"),
+     compileCachePath: path.join(input.dirname, "compileCache.cjs"),
+     appUpdateYmlPath: input.isPackaged
+       ? path.join(resourcesPath, "app-update.yml")
+diff --git a/apps/desktop/src/ipc/channels.ts b/apps/desktop/src/ipc/channels.ts
+index 4a99d52b0e79dc62da23705379b5cd90c22511c5..24d304ac387f2c6943b4212792b8de29fede2a0b 100644
+--- a/apps/desktop/src/ipc/channels.ts
++++ b/apps/desktop/src/ipc/channels.ts
+@@ -151,3 +151,9 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
+ export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
+ 
+ export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
++
++export const USAGE_MENU_SNAPSHOT_CHANNEL = "desktop:usage-menu:snapshot";
++export const USAGE_MENU_ACTION_CHANNEL = "desktop:usage-menu:action";
++export const USAGE_PANEL_SNAPSHOT_CHANNEL = "desktop:usage-panel:snapshot";
++export const USAGE_PANEL_REQUEST_CHANNEL = "desktop:usage-panel:request";
++export const USAGE_PANEL_RESIZE_CHANNEL = "desktop:usage-panel:resize";
+diff --git a/apps/desktop/src/preload.ts b/apps/desktop/src/preload.ts
+index 280c5ad6c6716e082df03dcae7787ee17ef7d158..3689a6a830d4d7613db3df431b7721da16136475 100644
+--- a/apps/desktop/src/preload.ts
++++ b/apps/desktop/src/preload.ts
+@@ -120,6 +120,24 @@ contextBridge.exposeInMainWorld("desktopBridge", {
+   restartAudioService: () => ipcRenderer.invoke(IpcChannels.RESTART_AUDIO_SERVICE_CHANNEL),
+   setNotificationBadge: (badge) =>
+     ipcRenderer.invoke(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, badge),
++  updateUsageMenu: (snapshot) =>
++    ipcRenderer.send(IpcChannels.USAGE_MENU_SNAPSHOT_CHANNEL, snapshot),
++  onUsageMenuAction: (listener) => {
++    const handler = (_event: unknown, action: unknown) => {
++      if (
++        action === "cost" ||
++        action === "tokens" ||
++        action === "limits" ||
++        action === "refresh" ||
++        action === "show" ||
++        action === "hide" ||
++        action === "open"
++      )
++        listener(action);
++    };
++    ipcRenderer.on(IpcChannels.USAGE_MENU_ACTION_CHANNEL, handler);
++    return () => ipcRenderer.removeListener(IpcChannels.USAGE_MENU_ACTION_CHANNEL, handler);
++  },
+   onNotificationBadgeClear: (listener) => {
+     const handler = () => listener();
+     ipcRenderer.on(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, handler);
+diff --git a/apps/desktop/src/usage-panel-preload.ts b/apps/desktop/src/usage-panel-preload.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..07778ddc5ab79459becf4e0eef578ed2ebd359a0
+--- /dev/null
++++ b/apps/desktop/src/usage-panel-preload.ts
+@@ -0,0 +1,18 @@
++import type { DesktopUsagePanelBridge } from "@t3tools/contracts";
++import { contextBridge, ipcRenderer } from "electron";
++import {
++  USAGE_PANEL_REQUEST_CHANNEL,
++  USAGE_PANEL_RESIZE_CHANNEL,
++  USAGE_PANEL_SNAPSHOT_CHANNEL,
++} from "./ipc/channels.ts";
++
++contextBridge.exposeInMainWorld("desktopUsagePanel", {
++  onSnapshot: (listener) => {
++    const handle: Parameters<typeof ipcRenderer.on>[1] = (_event, snapshot) => listener(snapshot);
++    ipcRenderer.on(USAGE_PANEL_SNAPSHOT_CHANNEL, handle);
++    ipcRenderer.send(USAGE_PANEL_REQUEST_CHANNEL, "ready");
++    return () => ipcRenderer.removeListener(USAGE_PANEL_SNAPSHOT_CHANNEL, handle);
++  },
++  request: (action) => ipcRenderer.send(USAGE_PANEL_REQUEST_CHANNEL, action),
++  resize: (height) => ipcRenderer.send(USAGE_PANEL_RESIZE_CHANNEL, height),
++} satisfies DesktopUsagePanelBridge);
+diff --git a/apps/desktop/src/window/DesktopWindow.ts b/apps/desktop/src/window/DesktopWindow.ts
+index 741e03b79b3c29cc0ff39c3a1ea870b10dbb9026..b81f320bb1f3f055fd3734f6eaa05bef0d33ea55 100644
+--- a/apps/desktop/src/window/DesktopWindow.ts
++++ b/apps/desktop/src/window/DesktopWindow.ts
+@@ -13,6 +13,7 @@ import { msg } from "gt-i18n";
+ 
+ import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+ 
++import { installUsageMenuBar } from "./UsageMenuBar.ts";
+ import * as DesktopAssets from "../app/DesktopAssets.ts";
+ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+ import * as DesktopPrimaryPaste from "../app/DesktopPrimaryPaste.ts";
+@@ -1023,6 +1024,10 @@ export const make = Effect.gen(function* () {
+ 
+     // Desktop IPC only answers the main window, so register it before its renderer can call in.
+     yield* electronWindow.setMain(window);
++    if (environment.platform === "darwin")
++      installUsageMenuBar(window, applicationUrl, environment.usagePanelPreloadPath, (error) => {
++        void runPromise(logWindowWarning("usage panel failed to load", { error }));
++      });
+     loadApplication();
+     if (environment.isDevelopment) {
+       window.webContents.openDevTools({ mode: "detach" });
+diff --git a/apps/desktop/src/window/UsageMenuBar.ts b/apps/desktop/src/window/UsageMenuBar.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d02668c028a0d387820ef8328b9dd39cfce5eecc
+--- /dev/null
++++ b/apps/desktop/src/window/UsageMenuBar.ts
+@@ -0,0 +1,191 @@
++import { app, BrowserWindow, nativeImage, screen, Tray } from "electron";
++import * as Option from "effect/Option";
++import * as Schema from "effect/Schema";
++import { DesktopUsageMenuSnapshot, type DesktopUsageMenuAction } from "@t3tools/contracts";
++import {
++  USAGE_MENU_ACTION_CHANNEL,
++  USAGE_MENU_SNAPSHOT_CHANNEL,
++  USAGE_PANEL_REQUEST_CHANNEL,
++  USAGE_PANEL_RESIZE_CHANNEL,
++  USAGE_PANEL_SNAPSHOT_CHANNEL,
++} from "../ipc/channels.ts";
++
++// The flat wordmark from assets/prod/logo.svg, rendered as a template with transparent lettering.
++const ICON =
++  "iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAB4klEQVRYhe3Yv48NURjG8c/9ITSEKERWg4KSIBGVbEVWsVEoVCIaQWwUOiEaSolCIQqCRrHZRIJIaJT8AxKyxd5lbaMSiw3Fmbt3TObMvTeZuZNN9kneyZkz75z5zvu+5+TMsKZVpkakv41D2I5Wyc9cxjze408/5yauYBF/K7ZvmBIPiiaejgAka49jUJdrgOnahSxMC19qBJpPMrSi/TXCdG2fFNVYNmQ1aAc9oHaNIF21Vw45eot7Qwy2DvdxZgDfbbjbz2nS//l8MAQMrMf3AX13y6+hSTKVPSLtHMQpG6E825vyvzOAf9euZ2C+RvxGEqEnuJm0t+KFUENRVQn0BmeFt9+AGezpd1OVQKfxK/Wc23hZJ9DPVPsHnuM4bhXdVOWCeANLwnLwDJ+S/ms4KZK+KoGmUu2r2JXALQupywUqO2WLkf4t2Jw6X4oNUCbQbxzGMSFFnaRvVthrzaZ8D8QGKTNlD/E5sVcFfkcwHrtYZoQ2CR8FRRrHtIJ99DAROqdXIwdzrp8SZs9rvMNHoYg3CgU9gaNFMGmdUP+OcYJeyjqDUFesufRJU72b/I6cer5UI9D5vJA1hI+2UcM8UlDoDWERWxgByAIuZmFiZC1hao+p5mfDHD4k7TWtbv0DQBuFtpFQ/bUAAAAASUVORK5CYII=";
++const WIDTH = 360;
++const MAX_HEIGHT = 560;
++const GAP = 6;
++const decodeSnapshot = Schema.decodeUnknownOption(Schema.NullOr(DesktopUsageMenuSnapshot));
++
++export function installUsageMenuBar(
++  window: BrowserWindow,
++  applicationUrl: string,
++  preload: string,
++  logFailure: (error: unknown) => void,
++) {
++  const contents = window.webContents;
++  let tray: Tray | null = null;
++  let panel: BrowserWindow | null = null;
++  let snapshot: DesktopUsageMenuSnapshot | null = null;
++  let requested = false;
++  let ready = false;
++
++  const send = (action: DesktopUsageMenuAction) => {
++    if (!contents.isDestroyed()) contents.send(USAGE_MENU_ACTION_CHANNEL, action);
++  };
++  const publish = () => {
++    if (ready && panel && !panel.webContents.isDestroyed()) {
++      panel.webContents.send(USAGE_PANEL_SNAPSHOT_CHANNEL, requested ? snapshot : null);
++    }
++  };
++  const hide = () => {
++    if (!requested) return;
++    requested = false;
++    panel?.hide();
++    publish();
++    send("hide");
++  };
++  const reset = () => {
++    hide();
++    panel?.destroy();
++    panel = null;
++    tray?.destroy();
++    tray = null;
++    snapshot = null;
++    ready = false;
++  };
++
++  const makePanel = () => {
++    const usageWindow = new BrowserWindow({
++      width: WIDTH,
++      height: 160,
++      show: false,
++      frame: false,
++      resizable: false,
++      skipTaskbar: true,
++      fullscreenable: false,
++      alwaysOnTop: true,
++      webPreferences: {
++        preload,
++        contextIsolation: true,
++        nodeIntegration: false,
++        sandbox: true,
++        spellcheck: false,
++      },
++    });
++    const web = usageWindow.webContents;
++    const target = new URL("usage-panel.html", applicationUrl).href;
++
++    web.setWindowOpenHandler(() => ({ action: "deny" }));
++    web.on("will-navigate", (event) => event.preventDefault());
++    web.ipc.on(USAGE_PANEL_REQUEST_CHANNEL, (event, action: unknown) => {
++      if (event.senderFrame !== web.mainFrame || event.senderFrame?.url !== target) return;
++      if (action === "ready") {
++        ready = true;
++        publish();
++      } else if (requested && (action === "cost" || action === "tokens" || action === "limits")) {
++        send(action);
++      } else if (requested && action === "refresh") {
++        send("refresh");
++      } else if (requested && action === "open") {
++        hide();
++        if (window.isMinimized()) window.restore();
++        window.show();
++        window.focus();
++        send("open");
++      }
++    });
++    web.ipc.on(USAGE_PANEL_RESIZE_CHANNEL, (event, height: unknown) => {
++      if (
++        event.senderFrame !== web.mainFrame ||
++        event.senderFrame?.url !== target ||
++        !requested ||
++        !tray ||
++        typeof height !== "number" ||
++        !Number.isFinite(height)
++      )
++        return;
++      const anchor = tray.getBounds();
++      const area = screen.getDisplayMatching(anchor).workArea;
++      const y = Math.max(area.y, anchor.y + anchor.height) + GAP;
++      const heightLimit = Math.max(1, Math.min(MAX_HEIGHT, area.y + area.height - y - GAP));
++      const width = Math.min(WIDTH, area.width);
++      const centered = Math.round(anchor.x + (anchor.width - width) / 2);
++      const x = Math.min(Math.max(centered, area.x), area.x + area.width - width);
++      usageWindow.setBounds({
++        x,
++        y,
++        width,
++        height: Math.min(heightLimit, Math.max(1, Math.ceil(height))),
++      });
++      if (!usageWindow.isVisible()) usageWindow.show();
++    });
++    web.on("before-input-event", (event, input) => {
++      if (input.type !== "keyDown" || input.key !== "Escape") return;
++      event.preventDefault();
++      hide();
++    });
++    web.on("render-process-gone", () => usageWindow.destroy());
++    usageWindow.on("blur", () => {
++      if (!tray) return;
++      // A tray click also blurs the window. Let the tray handle that toggle once.
++      const point = screen.getCursorScreenPoint();
++      const anchor = tray.getBounds();
++      if (
++        point.x < anchor.x ||
++        point.x >= anchor.x + anchor.width ||
++        point.y < anchor.y ||
++        point.y >= anchor.y + anchor.height
++      )
++        hide();
++    });
++    usageWindow.on("closed", () => {
++      panel = null;
++      ready = false;
++      hide();
++    });
++    void usageWindow.loadURL(target).catch((error: unknown) => {
++      logFailure(error);
++      if (!usageWindow.isDestroyed()) usageWindow.destroy();
++    });
++    return usageWindow;
++  };
++
++  const toggle = () => {
++    if (!snapshot) return;
++    if (requested) {
++      hide();
++      return;
++    }
++    requested = true;
++    panel ??= makePanel();
++    publish();
++    send("show");
++  };
++
++  contents.ipc.on(USAGE_MENU_SNAPSHOT_CHANNEL, (event, input: unknown) => {
++    if (event.senderFrame !== contents.mainFrame) return;
++    const decoded = decodeSnapshot(input);
++    if (Option.isNone(decoded)) return;
++    snapshot = decoded.value;
++    if (snapshot === null) {
++      reset();
++      return;
++    }
++    if (!tray) {
++      const image = nativeImage.createFromBuffer(Buffer.from(ICON, "base64"), { scaleFactor: 2 });
++      image.setTemplateImage(true);
++      tray = new Tray(image);
++      tray.setToolTip("T3 Code");
++      tray.on("click", toggle);
++    }
++    publish();
++  });
++  contents.on("render-process-gone", reset);
++  app.once("will-quit", reset);
++  window.once("closed", () => {
++    app.removeListener("will-quit", reset);
++    reset();
++  });
++}
+diff --git a/apps/desktop/vite.config.ts b/apps/desktop/vite.config.ts
+index f4e04317e49246522b63a38979c7184a66b3fda0..254ca326db0e9d9d339bbedef55936d8b76f1377 100644
+--- a/apps/desktop/vite.config.ts
++++ b/apps/desktop/vite.config.ts
+@@ -159,6 +159,14 @@ export default defineConfig({
+       outExtensions: () => ({ js: ".cjs" }),
+       entry: ["src/mac-permission-preload.ts"],
+     },
++    {
++      format: "cjs",
++      outDir: "dist-electron",
++      dts: false,
++      sourcemap: true,
++      outExtensions: () => ({ js: ".cjs" }),
++      entry: ["src/usage-panel-preload.ts"],
++    },
+   ],
+   test: {
+     // The Windows lane runs workspace suites concurrently; filesystem-heavy
+diff --git a/apps/web/src/AppRoot.tsx b/apps/web/src/AppRoot.tsx
+index 279e1b70d5fa002e34ee535648ffa70ffa1717ba..300d230ce0ab0d1d3031813cf33ac95083aa767d 100644
+--- a/apps/web/src/AppRoot.tsx
++++ b/apps/web/src/AppRoot.tsx
+@@ -1,6 +1,7 @@
+ import { RouterProvider } from "@tanstack/react-router";
+ 
+ import { ElectronBrowserHost } from "./browser/ElectronBrowserHost";
++import { DesktopUsageMenu } from "./components/usage/DesktopUsageMenu";
+ import { QuitHoldOverlay } from "./components/QuitHoldOverlay";
+ import { I18nProvider } from "./i18n/I18nProvider";
+ import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
+@@ -13,6 +14,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
+       <AppAtomRegistryProvider>
+         <RouterProvider router={router} />
+         <ElectronBrowserHost />
++        <DesktopUsageMenu router={router} />
+         <QuitHoldOverlay />
+       </AppAtomRegistryProvider>
+     </I18nProvider>
+diff --git a/apps/web/src/components/settings/AppearanceSettingsPanel.tsx b/apps/web/src/components/settings/AppearanceSettingsPanel.tsx
+index 72fda9150a7b2a5af49b149262d1c204e82915e3..a28fad813c42042d405b002a28b2c2afa40176a2 100644
+--- a/apps/web/src/components/settings/AppearanceSettingsPanel.tsx
++++ b/apps/web/src/components/settings/AppearanceSettingsPanel.tsx
+@@ -262,6 +262,20 @@ export function AppearanceSettingsPanel() {
+           }
+         />
+ 
++        {window.desktopBridge?.getClientPlatform() === "darwin" ? (
++          <SettingsRow
++            {...searchableSetting("menu-bar-usage-limits")}
++            control={
++              <Switch
++                aria-label={gt("Show limits in the menu bar")}
++                checked={settings.showMenuBarUsageLimits}
++                onCheckedChange={(showMenuBarUsageLimits) =>
++                  updateSettings({ showMenuBarUsageLimits })
++                }
++              />
++            }
++          />
++        ) : null}
+         <SettingsRow
+           {...searchableSetting("chat-width")}
+           description={gt("Set how wide messages and the composer can grow on large screens.")}
+diff --git a/apps/web/src/components/settings/settingsSearch.ts b/apps/web/src/components/settings/settingsSearch.ts
+index 51ac4d7e19add280a237d4f21d97ee6c4d39bdf4..594ed43a6d9cdad3319e1d21899801526b1a222e 100644
+--- a/apps/web/src/components/settings/settingsSearch.ts
++++ b/apps/web/src/components/settings/settingsSearch.ts
+@@ -793,6 +793,16 @@ export const SETTINGS_SEARCH_ITEMS = [
+     to: "/settings/chat",
+     searchTerms: [msg("composer rich text tiptap bold italic markdown styled wysiwyg")],
+   },
++  ...(typeof window !== "undefined" && window.desktopBridge?.getClientPlatform?.() === "darwin"
++    ? [
++        {
++          id: "menu-bar-usage-limits",
++          title: msg("Show limits in the menu bar"),
++          to: "/settings/appearance" as const,
++          searchTerms: [msg("macOS menu bar remaining quota usage limits")],
++        },
++      ]
++    : []),
+   {
+     id: "send-shortcut",
+     title: msg("Send shortcut"),
+diff --git a/apps/web/src/components/usage/DesktopUsageMenu.browser.test.tsx b/apps/web/src/components/usage/DesktopUsageMenu.browser.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f588a8f4d89dfff90912fdb303923bafcfe6c3f
+--- /dev/null
++++ b/apps/web/src/components/usage/DesktopUsageMenu.browser.test.tsx
+@@ -0,0 +1,186 @@
++import { EnvironmentId, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
++import { useSyncExternalStore } from "react";
++import { expect, it, vi } from "vite-plus/test";
++
++import { act, render } from "../../../test/render";
++import { CODEX_PROVIDER } from "../../../test/fakeEnvironment";
++import { __setClientSettingsForTests, getClientSettings } from "../../hooks/useSettings";
++import { getRouter } from "../../router";
++import { createMemoryHistory } from "@tanstack/react-router";
++import { DesktopUsageMenu } from "./DesktopUsageMenu";
++import type { DesktopUsageMenuAction, DesktopUsageMenuSnapshot } from "@t3tools/contracts";
++import { formatTokens, formatUsd, makeWindow } from "@t3tools/shared/usageFormat";
++import * as usageData from "../../state/usage";
++import * as state from "./usageLimitState";
++
++vi.mock("./usageLimitState", { spy: true });
++
++it("keeps cached limits marked offline until the selected machine reconnects", async () => {
++  using cleanup = new DisposableStack();
++  const previousSettings = getClientSettings();
++  cleanup.defer(() => __setClientSettingsForTests(previousSettings));
++  __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, showMenuBarUsageLimits: true });
++  const receiveSnapshot = vi.fn();
++  vi.stubGlobal("desktopBridge", {
++    getClientPlatform: () => "darwin",
++    updateUsageMenu: receiveSnapshot,
++  });
++  cleanup.defer(() => vi.unstubAllGlobals());
++
++  const id = EnvironmentId.make("windows-fixture");
++  const checkedAt = "2026-11-22T10:00:00.000Z";
++  const fixture = (phase: "connected" | "disconnected") =>
++    new Map([
++      [
++        id,
++        {
++          connection: { phase },
++          entry: { target: { label: "Sample Windows machine" } },
++          serverConfig: {
++            providers: [
++              {
++                ...CODEX_PROVIDER,
++                usageLimits: {
++                  checkedAt,
++                  windows: [{ id: "session", label: "Session", kind: "session", usedPercent: 28 }],
++                },
++              },
++            ],
++          },
++        },
++      ],
++    ]) as unknown as ReturnType<typeof state.useFilteredLimitPresentations>;
++  let presentations = fixture("disconnected");
++  const updates = new EventTarget();
++  function usePresentations() {
++    return useSyncExternalStore(
++      (notify) => {
++        updates.addEventListener("change", notify);
++        return () => updates.removeEventListener("change", notify);
++      },
++      () => presentations,
++    );
++  }
++  vi.mocked(state.useFilteredLimitPresentations).mockImplementation(usePresentations);
++  const refresh = vi.fn().mockResolvedValue([]);
++  vi.mocked(state.useRefreshFilteredLimits).mockReturnValue(refresh);
++  cleanup.defer(() => {
++    vi.mocked(state.useFilteredLimitPresentations).mockRestore();
++    vi.mocked(state.useRefreshFilteredLimits).mockRestore();
++  });
++
++  const router = getRouter(createMemoryHistory());
++  await using _screen = await render(<DesktopUsageMenu router={router} />);
++  await vi.waitFor(() =>
++    expect(receiveSnapshot.mock.lastCall?.[0]?.sections[0]?.rows[0]).toMatchObject({
++      label: "Session",
++      remaining: 72,
++      stale: "Last known",
++    }),
++  );
++  expect(refresh).not.toHaveBeenCalled();
++
++  await act(() => {
++    presentations = fixture("connected");
++    updates.dispatchEvent(new Event("change"));
++  });
++  await vi.waitFor(() =>
++    expect(receiveSnapshot.mock.lastCall?.[0]?.sections[0]?.rows[0]).toMatchObject({
++      label: "Session",
++      remaining: 72,
++      stale: null,
++    }),
++  );
++  expect(refresh).toHaveBeenCalledWith(true);
++});
++
++vi.mock("../../state/usage", { spy: true });
++
++it("opens on limits, shares the selected usage window and filters, and refreshes the visible metric", async () => {
++  using cleanup = new DisposableStack();
++  const previous = getClientSettings();
++  __setClientSettingsForTests({ ...previous, showMenuBarUsageLimits: true });
++  cleanup.defer(() => __setClientSettingsForTests(previous));
++  let snapshot: DesktopUsageMenuSnapshot | null = null;
++  let send = (_action: DesktopUsageMenuAction) => {};
++  vi.stubGlobal("desktopBridge", {
++    getClientPlatform: () => "darwin",
++    updateUsageMenu: (next: DesktopUsageMenuSnapshot | null) => {
++      snapshot = next;
++    },
++    onUsageMenuAction: (listener: typeof send) => {
++      send = listener;
++      return () => {};
++    },
++  });
++  cleanup.defer(() => vi.unstubAllGlobals());
++  const refresh = vi.fn().mockResolvedValue(undefined);
++  const usage = vi.mocked(usageData.useUsage).mockReturnValue({
++    selectedEnvironments: [{ summary: {} }, { summary: null }],
++    merged: {
++      costUsd: 5,
++      totalTokens: 1200,
++      costQuality: { unpricedShare: 0.2 },
++      daily: [
++        {
++          day: makeWindow(1).untilDay,
++          byProvider: new Map([
++            ["codex", { costUsd: 3, totalTokens: 200 }],
++            ["cursor", { costUsd: 2, totalTokens: 1000 }],
++          ]),
++        },
++      ],
++      hourly: [],
++      providers: [
++        { provider: "codex", costUsd: 3, totalTokens: 200 },
++        { provider: "cursor", costUsd: 2, totalTokens: 1000 },
++      ],
++    },
++    refresh,
++  } as unknown as usageData.UsageView);
++  cleanup.defer(() => usage.mockRestore());
++  const ids = new Set([EnvironmentId.make("windows")]);
++  const oldIds = state.useUsageEnvironmentFilter.getState().selectedEnvironmentIds;
++  state.useUsageEnvironmentFilter.getState().setSelectedEnvironmentIds(ids);
++  cleanup.defer(() => state.useUsageEnvironmentFilter.getState().setSelectedEnvironmentIds(oldIds));
++  const router = getRouter(createMemoryHistory());
++  await using _app = await render(<DesktopUsageMenu router={router} />);
++  const read = (): DesktopUsageMenuSnapshot => snapshot!;
++  expect(read().navigation?.metric).toBe("limits");
++  expect(usage).not.toHaveBeenCalled();
++  await act(() => {
++    send("show");
++    send("cost");
++  });
++  expect(read().summary?.total).toBe(formatUsd(5, "en"));
++  expect(read().summary?.status).toBeNull();
++  expect(read().summary?.trend?.paths).toHaveLength(2);
++  expect(read().summary?.rows.map((row) => row.label)).toEqual(["Codex", "Cursor"]);
++  const costTrend = read().summary!.trend!;
++  expect(costTrend.title).toBe("Daily cost");
++  const period = usage.mock.lastCall?.[0];
++  await act(() => send("tokens"));
++  expect(usage.mock.lastCall?.slice(0, 2)).toEqual([period, ids]);
++  expect(read().summary?.trend?.title).toBe("Daily processed tokens");
++  expect(read().summary?.trend?.paths).not.toEqual(costTrend.paths);
++  expect(read().summary?.total).toBe(formatTokens(1200));
++  expect(read().summary?.rows.map((row) => row.label)).toEqual(["Cursor", "Codex"]);
++  await act(() => send("refresh"));
++  expect(refresh).toHaveBeenCalledTimes(1);
++  await act(() => send("hide"));
++  await act(() => send("show"));
++  expect(read().navigation?.metric).toBe("tokens");
++  const sample = usage.mock.results.at(-1)!.value!;
++  usage.mockReturnValue({ ...sample, selectedEnvironments: [], isPending: true });
++  await act(() => send("cost"));
++  expect(read().summary?.total).toBeNull();
++  expect(read().summary?.status).toContain("Loading");
++  usage.mockReturnValue({
++    ...sample,
++    merged: { ...sample.merged, totalTokens: 0, providers: [] },
++    selectedEnvironments: sample.selectedEnvironments.slice(0, 1),
++  });
++  await act(() => send("tokens"));
++  expect(read().summary?.total).toBe(formatTokens(0));
++  expect(read().summary?.rows).toEqual([]);
++});
+diff --git a/apps/web/src/components/usage/DesktopUsageMenu.tsx b/apps/web/src/components/usage/DesktopUsageMenu.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a78a0043e1893fb57f302c48d7201257d760010
+--- /dev/null
++++ b/apps/web/src/components/usage/DesktopUsageMenu.tsx
+@@ -0,0 +1,338 @@
++import {
++  collectLimitAccounts,
++  collectLimitPools,
++  displayLimitWindows,
++  paceRemainingPercent,
++  remainingPercent,
++} from "@t3tools/shared/usageLimits";
++import { cursorUsageWindowDetails, formatResetsIn } from "@t3tools/shared/usageLimitsCopy";
++import { useGT, useLocale, useMessages } from "gt-react";
++import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
++import type {
++  DesktopUsageMenuAction,
++  DesktopUsageMenuSnapshot,
++  EnvironmentId,
++} from "@t3tools/contracts";
++
++import {
++  enumerateDays,
++  enumerateHourStarts,
++  formatDayShort,
++  formatHourShort,
++  formatTokens,
++  formatUsd,
++} from "@t3tools/shared/usageFormat";
++import { useUsage } from "../../state/usage";
++import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
++import { buildChart } from "./UsageProviderChart";
++import { usePrimarySettings } from "../../hooks/useSettings";
++import { resolveHour12 } from "../../timestampFormat";
++import { METRIC_OPTIONS, WINDOW_OPTIONS, type UsageMetric } from "./usageShortcuts";
++import { PROVIDER_PRESENTATION, providersWithUsage, rankProvidersByMetric } from "./usageProviders";
++import type { AppRouter } from "../../router";
++import { useClientSettings } from "../../hooks/useSettings";
++import { providerClients } from "../settings/providerDriverMeta";
++import {
++  useFilteredLimitPresentations,
++  useRefreshFilteredLimits,
++  useUsageEnvironmentFilter,
++  useUsageWindow,
++} from "./usageLimitState";
++import { barColor, quotaSegmentColor } from "./UsageQuotaBar";
++import { useUsagePagePreferences } from "./usagePagePreferences";
++
++export function DesktopUsageMenu({ router }: { readonly router: AppRouter }) {
++  const enabled = useClientSettings((settings) => settings.showMenuBarUsageLimits);
++  return enabled &&
++    window.desktopBridge?.getClientPlatform() === "darwin" &&
++    window.desktopBridge.updateUsageMenu ? (
++    <EnabledDesktopUsageMenu router={router} />
++  ) : null;
++}
++
++function EnabledDesktopUsageMenu({ router }: { readonly router: AppRouter }) {
++  const bridge = window.desktopBridge;
++  const gt = useGT();
++  const m = useMessages();
++  const [preferences, setPreferences] = useUsagePagePreferences();
++  const { selectedEnvironmentIds } = useUsageEnvironmentFilter();
++  const presentations = useFilteredLimitPresentations(
++    selectedEnvironmentIds,
++    new Set(preferences.hiddenProviders),
++  );
++  const refreshLimits = useRefreshFilteredLimits(selectedEnvironmentIds);
++  const [metric, setMetric] = useState<UsageMetric>("limits");
++  const summaryRefresh = useRef<(() => void) | null>(null);
++  const [now, setNow] = useState(() => Date.now());
++  const [visible, setVisible] = useState(false);
++  const [refreshing, setRefreshing] = useState(false);
++  const [refreshFailed, setRefreshFailed] = useState(false);
++  const connectedIds = [...presentations]
++    .filter(([, value]) => value.connection.phase === "connected")
++    .map(([id]) => id)
++    .sort()
++    .join("\n");
++
++  const refresh = useEffectEvent((automatic: boolean) => {
++    if (!automatic) {
++      setRefreshing(true);
++      setRefreshFailed(false);
++    }
++    void refreshLimits(automatic)
++      .then(
++        (results) => {
++          if (results.some((result) => result !== undefined)) setRefreshFailed(false);
++          setNow(Date.now());
++        },
++        (error: unknown) => {
++          console.error("Could not refresh menu bar usage limits.", error);
++          setRefreshFailed(true);
++        },
++      )
++      .finally(() => {
++        if (!automatic) setRefreshing(false);
++      });
++  });
++
++  const handleAction = useEffectEvent((action: DesktopUsageMenuAction) => {
++    switch (action) {
++      case "cost":
++      case "tokens":
++      case "limits":
++        if (action === "limits" && metric !== "limits") refresh(true);
++        setMetric(action);
++        break;
++      case "open":
++        setPreferences((current) => ({ ...current, metric }));
++        void router.navigate({ to: "/usage" });
++        break;
++      case "show":
++        setVisible(true);
++        setNow(Date.now());
++        if (metric === "limits") refresh(true);
++        break;
++      case "hide":
++        setVisible(false);
++        break;
++      case "refresh":
++        if (metric === "limits") refresh(false);
++        else summaryRefresh.current?.();
++        break;
++    }
++  });
++  useEffect(() => bridge?.onUsageMenuAction?.((action) => handleAction(action)), [bridge]);
++  useEffect(() => () => bridge?.updateUsageMenu?.(null), [bridge]);
++  useEffect(() => {
++    if (connectedIds) refresh(true);
++  }, [connectedIds]);
++  useEffect(() => {
++    if (!visible) return;
++    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
++    return () => window.clearInterval(tick);
++  }, [visible]);
++
++  const base = {
++    navigation: {
++      metric,
++      options: METRIC_OPTIONS.map((option) => ({ value: option.value, label: m(option.label) })),
++    },
++    sections:
++      metric !== "limits"
++        ? []
++        : usageQuotaSections(
++            presentations,
++            now,
++            gt,
++            m,
++            (id) => presentations.get(id)?.connection.phase === "connected",
++          ),
++    title: gt("Usage metric"),
++    empty: gt("No usage limits available"),
++    refresh: gt("Refresh limits"),
++    openUsage: gt("Open Usage…"),
++    refreshing,
++    refreshFailed: refreshFailed ? gt("Could not refresh limits") : null,
++  };
++  const snapshot = JSON.stringify(base);
++  useEffect(() => {
++    if (metric === "limits") bridge?.updateUsageMenu?.(JSON.parse(snapshot));
++  }, [bridge, snapshot, metric]);
++  return visible && metric !== "limits" ? (
++    <UsageSummaryPublisher
++      base={base}
++      metric={metric}
++      preferences={preferences}
++      ids={selectedEnvironmentIds}
++      refreshRef={summaryRefresh}
++    />
++  ) : null;
++}
++
++function UsageSummaryPublisher({
++  base,
++  metric,
++  preferences,
++  ids,
++  refreshRef,
++}: {
++  base: DesktopUsageMenuSnapshot;
++  metric: "tokens" | "cost";
++  preferences: ReturnType<typeof useUsagePagePreferences>[0];
++  ids: ReadonlySet<EnvironmentId> | null;
++  refreshRef: { current: (() => void) | null };
++}) {
++  const gt = useGT();
++  const m = useMessages();
++  const locale = useLocale();
++  const days = preferences.windowDays;
++  const { window: windowInput, renew } = useUsageWindow(days);
++  const hidden = useMemo(() => new Set(preferences.hiddenProviders), [preferences.hiddenProviders]);
++  const usage = useUsage(windowInput, ids, hidden);
++  const [busy, setBusy] = useState(false);
++  const [failed, setFailed] = useState(false);
++  const refresh = useEffectEvent(async () => {
++    if (busy) return;
++    setBusy(true);
++    setFailed(false);
++    try {
++      await usage.refresh(renew());
++    } catch {
++      setFailed(true);
++    } finally {
++      setBusy(false);
++    }
++  });
++  useEffect(() => {
++    refreshRef.current = () => void refresh();
++    return () => {
++      refreshRef.current = null;
++    };
++  }, [refreshRef]);
++  const { merged, selectedEnvironments } = usage;
++  const answered = selectedEnvironments.filter((env) => env.summary !== null).length;
++  const format = (value: number) =>
++    metric === "cost" ? formatUsd(value, locale) : formatTokens(value);
++  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
++  const hourly = windowInput.resolution === "hour";
++  const periods =
++    hourly && windowInput.sinceTime && windowInput.untilTime
++      ? enumerateHourStarts(windowInput.sinceTime, windowInput.untilTime)
++      : enumerateDays(windowInput.sinceDay, windowInput.untilDay);
++  const entries: readonly (DailyTotals | HourlyTotals)[] = hourly ? merged.hourly : merged.daily;
++  const byPeriod = new Map(
++    entries.map((entry) => ["hourStart" in entry ? entry.hourStart : entry.day, entry] as const),
++  );
++  const providers = providersWithUsage(merged.providers);
++  const chart = buildChart(periods, byPeriod, metric, providers, new Set());
++  const label = (period: string) =>
++    hourly
++      ? formatHourShort(period, windowInput.timeZone, hour12, locale)
++      : formatDayShort(period, locale);
++  const trendTitle = hourly
++    ? metric === "cost"
++      ? gt("Hourly cost")
++      : gt("Hourly processed tokens")
++    : metric === "cost"
++      ? gt("Daily cost")
++      : gt("Daily processed tokens");
++  const period = m(WINDOW_OPTIONS.find((o) => o.days === days)!.label);
++  const snapshot = JSON.stringify({
++    ...base,
++    refresh: gt("Refresh usage"),
++    refreshing: busy,
++    refreshFailed: failed ? gt("Could not refresh usage") : null,
++    summary: {
++      period,
++      ...(answered && periods.length
++        ? {
++            trend: {
++              title: trendTitle,
++              first: label(periods[0]!),
++              last: label(periods[periods.length - 1]!),
++              peak: format(chart.scale.max),
++              paths: chart.paths.map(({ provider, line, area }) => ({
++                line,
++                area,
++                color: PROVIDER_PRESENTATION[provider].color,
++              })),
++            },
++          }
++        : {}),
++      total: answered ? format(metric === "cost" ? merged.costUsd : merged.totalTokens) : null,
++      status: answered ? null : usage.isPending ? gt("Loading…") : gt("No usage data available"),
++      rows: rankProvidersByMetric(
++        providersWithUsage(merged.providers),
++        merged.providers,
++        metric,
++      ).map((provider) => {
++        const totals = merged.providers.find((entry) => entry.provider === provider)!;
++        return {
++          driver: PROVIDER_PRESENTATION[provider].driverKind,
++          label: PROVIDER_PRESENTATION[provider].label,
++          value: format(metric === "cost" ? totals.costUsd : totals.totalTokens),
++        };
++      }),
++    },
++  });
++  useEffect(() => {
++    window.desktopBridge?.updateUsageMenu?.(JSON.parse(snapshot));
++  }, [snapshot]);
++  return null;
++}
++
++type QuotaPresentations = Parameters<typeof collectLimitAccounts>[0];
++
++export function usageQuotaSections(
++  presentations: QuotaPresentations,
++  now: number,
++  gt: ReturnType<typeof useGT>,
++  m: ReturnType<typeof useMessages>,
++  isConnected?: (id: EnvironmentId) => boolean,
++): DesktopUsageMenuSnapshot["sections"] {
++  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
++  const anyConnected = isConnected && [...presentations.keys()].some(isConnected);
++  return pools.flatMap((pool) => {
++    const rows = displayLimitWindows(pool).map((window) => {
++      const details =
++        pool.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool, m) : undefined;
++      const label = details?.label ?? window.label;
++      const nextReset = window.resets[0];
++      let stale = false;
++      const segments = window.columns.map((member, index) => {
++        if (!member.window) return null;
++        const { account } = member;
++        const origins = account.environments.map((origin) => origin.environmentId);
++        if (origins.length === 0 && account.redeem) origins.push(account.redeem.environmentId);
++        if (isConnected && (origins.length > 0 ? !origins.some(isConnected) : !anyConnected))
++          stale = true;
++        const remaining = remainingPercent(member.window);
++        const namedAccount = account.displayName || gt("Account {number}", { number: index + 1 });
++        return {
++          label: gt("{name}: {remaining}% left", { name: namedAccount, remaining }),
++          color: quotaSegmentColor(barColor(pool.driver), account.accentColor),
++          remaining,
++          refill: member.window.resetsAt ? member.refillPercent : 0,
++          timeLeft: paceRemainingPercent(member.window, now),
++        };
++      });
++      return {
++        id: `${window.kind}:${window.id}`,
++        label,
++        remaining: window.remainingPercent,
++        remainingLabel: gt("{percent}% remaining", { percent: window.remainingPercent }),
++        reset: nextReset ? formatResetsIn(nextReset.member.window, now, m, "refill") : null,
++        stale: stale ? gt("Last known") : null,
++        segments,
++      };
++    });
++    return rows.length > 0
++      ? [
++          {
++            driver: pool.driver,
++            title: providerClients.get(pool.driver)?.label ?? pool.driver,
++            rows,
++          },
++        ]
++      : [];
++  });
++}
+diff --git a/apps/web/src/components/usage/DesktopUsagePanel.browser.test.tsx b/apps/web/src/components/usage/DesktopUsagePanel.browser.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0d6bde08bf0d13154b351b29fc10630d90c7e4bc
+--- /dev/null
++++ b/apps/web/src/components/usage/DesktopUsagePanel.browser.test.tsx
+@@ -0,0 +1,194 @@
++import {
++  EnvironmentId,
++  ProviderDriverKind,
++  ProviderInstanceId,
++  type ServerProvider,
++} from "@t3tools/contracts";
++import { useGT, useMessages } from "gt-react";
++import { expect, it, vi } from "vite-plus/test";
++import { page, userEvent } from "vite-plus/test/browser";
++
++import { act, render } from "../../../test/render";
++import { CODEX_PROVIDER } from "../../../test/fakeEnvironment";
++import stylesheet from "../../index.css?inline";
++import { usageQuotaSections } from "./DesktopUsageMenu";
++import { UsageQuotaPanel } from "./DesktopUsagePanel";
++import { UsageLimitsPooled } from "./UsageLimitsPooled";
++
++const checkedAt = "2026-11-22T10:00:00.000Z";
++const now = Date.parse(checkedAt);
++const resetsAt = "2026-11-22T13:00:00.000Z";
++
++function provider(
++  driver: string,
++  name: string,
++  windows: NonNullable<ServerProvider["usageLimits"]>["windows"],
++  accentColor?: string,
++): ServerProvider {
++  return {
++    ...CODEX_PROVIDER,
++    status: "ready",
++    auth: { status: "authenticated" },
++    instanceId: ProviderInstanceId.make(name.toLowerCase().replaceAll(" ", "-")),
++    driver: ProviderDriverKind.make(driver),
++    displayName: name,
++    checkedAt,
++    models: [],
++    slashCommands: [],
++    skills: [],
++    usageLimits: { checkedAt, windows },
++    ...(accentColor ? { accentColor } : {}),
++  };
++}
++
++const environment = EnvironmentId.make("fixture");
++const presentations = new Map([
++  [
++    environment,
++    {
++      entry: { target: { label: "Sample Mac" } },
++      serverConfig: {
++        providers: [
++          provider("codex", "Codex", [
++            {
++              id: "week",
++              kind: "weekly",
++              label: "Weekly",
++              usedPercent: 8,
++              resetsAt,
++              windowDurationMins: 10080,
++            },
++          ]),
++          provider("claudeAgent", "Claude", [
++            {
++              id: "session",
++              kind: "session",
++              label: "Session",
++              usedPercent: 26,
++              resetsAt,
++              windowDurationMins: 300,
++            },
++          ]),
++          provider("cursor", "Cursor Personal", [
++            {
++              id: "apiPercentUsed",
++              kind: "monthly",
++              label: "API",
++              usedPercent: 48,
++              resetsAt,
++              windowDurationMins: 43200,
++            },
++          ]),
++          provider(
++            "cursor",
++            "Cursor Studio",
++            [{ id: "apiPercentUsed", kind: "monthly", label: "API", usedPercent: 0 }],
++            "#497de8",
++          ),
++          provider("antigravity", "Antigravity", [
++            {
++              id: "gemini-5h",
++              kind: "session",
++              label: "Gemini · 5-hour",
++              usedPercent: 100,
++              resetsAt,
++              windowDurationMins: 300,
++            },
++            { id: "gemini-weekly", kind: "weekly", label: "Gemini · Weekly", usedPercent: 38 },
++          ]),
++        ],
++      },
++    },
++  ],
++]);
++
++function Comparison({
++  onAction,
++  empty = false,
++}: {
++  readonly onAction: import("@t3tools/contracts").DesktopUsagePanelBridge["request"];
++  readonly empty?: boolean;
++}) {
++  const sections = usageQuotaSections(presentations, now, useGT(), useMessages());
++  return (
++    <div className="flex h-screen items-start gap-8 overflow-auto bg-muted p-7">
++      <section
++        className="min-w-0 flex-1 space-y-4 rounded-xl border border-border bg-background p-5"
++        aria-label="Usage page"
++      >
++        <h1 className="text-lg font-semibold">Usage · Limits</h1>
++        <UsageLimitsPooled presentations={presentations} now={now} />
++      </section>
++      <section
++        className="h-[526px] w-[360px] shrink-0 overflow-hidden rounded-xl border border-border bg-background shadow-sm"
++        aria-label="Menu bar panel"
++      >
++        <UsageQuotaPanel
++          snapshot={{
++            sections: empty ? [] : sections,
++            title: "Usage limits",
++            empty: "No usage limits available",
++            refresh: "Refresh limits",
++            openUsage: "Open Usage…",
++            refreshing: false,
++            refreshFailed: null,
++          }}
++          onAction={onAction}
++        />
++      </section>
++    </div>
++  );
++}
++
++it("shares usage fills, provider and account colors, refill stripes, and pace marks", async () => {
++  await page.viewport(1240, 980);
++  const style = document.createElement("style");
++  style.textContent = stylesheet;
++  document.head.append(style);
++  using cleanup = {
++    [Symbol.dispose]: () => {
++      style.remove();
++      document.documentElement.classList.remove("dark");
++    },
++  };
++  document.documentElement.classList.add("dark");
++  const onAction = vi.fn();
++  await using rendered = await render(<Comparison onAction={onAction} />);
++  const usage = page.getByRole("region", { name: "Usage page" });
++  const panel = page.getByRole("region", { name: "Menu bar panel" });
++  for (const name of ["Codex", "Claude", "Cursor", "Antigravity"]) {
++    await expect.element(panel.getByRole("heading", { name })).toBeVisible();
++  }
++  const visual = (root: Element) =>
++    [...root.querySelectorAll("[data-quota-fill]")].map((el) => {
++      const fill = el as HTMLElement;
++      const bar = fill.parentElement!.parentElement!.parentElement!;
++      const refill = bar.querySelector<HTMLElement>("[data-quota-refill]");
++      return {
++        width: fill.style.width,
++        color: fill.style.backgroundColor,
++        refill: refill?.style.width ?? null,
++        stripes: refill?.style.backgroundImage ?? null,
++        pace: bar.querySelector<HTMLElement>("[data-quota-pace]")?.style.left ?? null,
++      };
++    });
++  const fills = visual(panel.element());
++  expect(fills).toEqual(visual(usage.element()));
++  expect(fills).toHaveLength(6);
++  expect(fills).toEqual(
++    expect.arrayContaining([
++      expect.objectContaining({ width: "0%", refill: "100%" }),
++      expect.objectContaining({ width: "100%", refill: null }),
++      expect.objectContaining({ width: "62%", refill: null, pace: null }),
++      expect.objectContaining({ color: "rgb(73, 125, 232)" }),
++    ]),
++  );
++  const refresh = panel.getByRole("button", { name: "Refresh limits" });
++  await expect.element(refresh).toBeVisible();
++  await userEvent.click(refresh);
++  expect(onAction).toHaveBeenCalledWith("refresh");
++  await userEvent.click(panel.getByRole("button", { name: "Open Usage…" }));
++  expect(onAction).toHaveBeenCalledWith("open");
++  await act(() => rendered.rerender(<Comparison onAction={onAction} empty />));
++  await expect.element(panel.getByText("No usage limits available")).toBeVisible();
++});
+diff --git a/apps/web/src/components/usage/DesktopUsagePanel.tsx b/apps/web/src/components/usage/DesktopUsagePanel.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fb5579d94baac836ab3ca3b0a37f6cfd34a16cf
+--- /dev/null
++++ b/apps/web/src/components/usage/DesktopUsagePanel.tsx
+@@ -0,0 +1,260 @@
++import { Toggle, ToggleGroup } from "../ui/toggle-group";
++import type { DesktopUsageMenuSnapshot, DesktopUsageQuotaSegment } from "@t3tools/contracts";
++import { ArrowUpRightIcon, RotateCwIcon } from "lucide-react";
++import { useEffect, useLayoutEffect, useRef, useState } from "react";
++
++import { UsageQuotaBarPaint, UsageQuotaProviderHeading, usePaceMark } from "./UsageQuotaBar";
++
++function QuotaSegment({ segment }: { readonly segment: DesktopUsageQuotaSegment }) {
++  const [ref, mark] = usePaceMark(segment.timeLeft);
++  return (
++    <div
++      ref={ref}
++      role="img"
++      aria-label={segment.label}
++      title={segment.label}
++      className="relative h-2.5 min-w-0 rounded-md bg-muted"
++      style={mark?.gappedTrack}
++    >
++      <UsageQuotaBarPaint
++        remaining={segment.remaining}
++        refill={segment.refill}
++        color={segment.color}
++        paceMark={mark}
++      />
++    </div>
++  );
++}
++
++export function UsageQuotaPanel({
++  snapshot,
++  onAction,
++  onResize,
++}: {
++  readonly snapshot: DesktopUsageMenuSnapshot;
++  readonly onAction: (
++    action: Parameters<import("@t3tools/contracts").DesktopUsagePanelBridge["request"]>[0],
++  ) => void;
++  readonly onResize?: ((height: number) => void) | undefined;
++}) {
++  const list = useRef<HTMLDivElement>(null);
++  const header = useRef<HTMLElement>(null);
++  const footer = useRef<HTMLElement>(null);
++  useLayoutEffect(() => {
++    const content = list.current;
++    const actions = footer.current;
++    if (!onResize || !content || !actions) return;
++    const measure = () => {
++      onResize(
++        content.getBoundingClientRect().height +
++          actions.getBoundingClientRect().height +
++          (header.current?.getBoundingClientRect().height ?? 0) +
++          2,
++      );
++    };
++    const observer = new ResizeObserver(measure);
++    observer.observe(content);
++    observer.observe(actions);
++    if (header.current) observer.observe(header.current);
++    measure();
++    return () => observer.disconnect();
++  }, [onResize]);
++
++  const buttonClass =
++    "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-55";
++  return (
++    <main
++      aria-label={snapshot.title}
++      className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground"
++    >
++      <header ref={header} className="flex shrink-0 justify-end px-4 pt-3">
++        {snapshot.navigation && (
++          <ToggleGroup
++            variant="segmented"
++            aria-label={snapshot.title}
++            value={[snapshot.navigation.metric]}
++            onValueChange={(next) => {
++              const metric = snapshot.navigation?.options.find(
++                (option) => option.value === next[0],
++              );
++              if (metric) onAction(metric.value);
++            }}
++          >
++            {snapshot.navigation.options.map(({ value, label }) => (
++              <Toggle key={value} value={value}>
++                {label}
++              </Toggle>
++            ))}
++          </ToggleGroup>
++        )}
++      </header>
++      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border">
++        <div ref={list} className="grid gap-4 px-4 py-3">
++          {snapshot.summary ? (
++            <>
++              <section>
++                <p className="text-xs text-muted-foreground">{snapshot.summary.period}</p>
++                {snapshot.summary.total !== null && (
++                  <p className="mt-1 text-2xl font-semibold tabular-nums">
++                    {snapshot.summary.total}
++                  </p>
++                )}
++                {snapshot.summary.status && (
++                  <p role="status" className="mt-1 text-xs text-muted-foreground">
++                    {snapshot.summary.status}
++                  </p>
++                )}
++              </section>
++              {snapshot.summary.trend && (
++                <figure aria-label={snapshot.summary.trend.title} className="grid gap-1">
++                  <figcaption className="text-xs font-medium">
++                    {snapshot.summary.trend.title}
++                  </figcaption>
++                  <div className="flex gap-1.5">
++                    <div
++                      aria-hidden
++                      className="flex h-24 shrink-0 flex-col justify-between text-right text-[10px] tabular-nums text-muted-foreground"
++                    >
++                      <span>{snapshot.summary.trend.peak}</span>
++                      <span>0</span>
++                    </div>
++                    <div className="min-w-0 flex-1">
++                      <svg
++                        aria-hidden
++                        viewBox="0 0 960 260"
++                        preserveAspectRatio="none"
++                        className="block h-24 w-full"
++                      >
++                        {[8, 134, 259].map((y) => (
++                          <line
++                            key={y}
++                            x1="0"
++                            x2="960"
++                            y1={y}
++                            y2={y}
++                            stroke="var(--border)"
++                            vectorEffect="non-scaling-stroke"
++                          />
++                        ))}
++                        {snapshot.summary.trend.paths.map((path) => (
++                          <path
++                            key={path.color}
++                            d={path.area}
++                            fill={path.color}
++                            fillOpacity={0.12}
++                          />
++                        ))}
++                        {snapshot.summary.trend.paths.map((path) => (
++                          <path
++                            key={path.color}
++                            d={path.line}
++                            fill="none"
++                            stroke={path.color}
++                            strokeWidth="1.6"
++                            vectorEffect="non-scaling-stroke"
++                          />
++                        ))}
++                      </svg>
++                      <div className="flex justify-between text-[10px] text-muted-foreground">
++                        <span>{snapshot.summary.trend.first}</span>
++                        <span>{snapshot.summary.trend.last}</span>
++                      </div>
++                    </div>
++                  </div>
++                </figure>
++              )}
++              {snapshot.summary.rows.map((row) => (
++                <div key={row.driver} className="flex items-center justify-between gap-2">
++                  <UsageQuotaProviderHeading driver={row.driver} label={row.label} />
++                  <span className="text-sm tabular-nums">{row.value}</span>
++                </div>
++              ))}
++            </>
++          ) : snapshot.sections.length === 0 ? (
++            <p className="py-3 text-sm text-muted-foreground">{snapshot.empty}</p>
++          ) : (
++            snapshot.sections.map((section) => (
++              <section key={section.driver} className="grid gap-2">
++                <UsageQuotaProviderHeading driver={section.driver} label={section.title} />
++                <div className="grid gap-3 pl-1">
++                  {section.rows.map((row) => (
++                    <div key={row.id} className="grid gap-1.5" aria-label={row.label}>
++                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
++                        <span className="min-w-0 grow basis-24 wrap-anywhere font-medium">
++                          {row.label}
++                        </span>
++                        <span
++                          className="shrink-0 font-semibold whitespace-nowrap tabular-nums"
++                          aria-label={row.remainingLabel}
++                        >
++                          {row.remaining}%
++                        </span>
++                        {row.reset ? (
++                          <span className="whitespace-nowrap text-muted-foreground">
++                            {row.reset}
++                          </span>
++                        ) : null}
++                      </div>
++                      <div
++                        className="grid gap-1"
++                        style={{
++                          gridTemplateColumns: `repeat(${row.segments.length}, minmax(0, 1fr))`,
++                        }}
++                      >
++                        {row.segments.map((segment, index) =>
++                          segment ? (
++                            <QuotaSegment key={index} segment={segment} />
++                          ) : (
++                            <div key={index} />
++                          ),
++                        )}
++                      </div>
++                      {row.stale ? (
++                        <p className="text-xs text-muted-foreground">{row.stale}</p>
++                      ) : null}
++                    </div>
++                  ))}
++                </div>
++              </section>
++            ))
++          )}
++          {snapshot.refreshFailed ? (
++            <p role="status" className="text-xs text-muted-foreground">
++              {snapshot.refreshFailed}
++            </p>
++          ) : null}
++        </div>
++      </div>
++      <footer
++        ref={footer}
++        className="flex flex-wrap items-center justify-between gap-1 border-t border-border px-2 py-1.5"
++      >
++        <button
++          type="button"
++          className={buttonClass}
++          onClick={() => onAction("refresh")}
++          disabled={snapshot.refreshing}
++        >
++          <RotateCwIcon
++            aria-hidden
++            className={snapshot.refreshing ? "size-3 animate-spin" : "size-3"}
++          />
++          {snapshot.refresh}
++        </button>
++        <button type="button" className={buttonClass} onClick={() => onAction("open")}>
++          {snapshot.openUsage}
++          <ArrowUpRightIcon aria-hidden className="size-3" />
++        </button>
++      </footer>
++    </main>
++  );
++}
++
++export function DesktopUsagePanel() {
++  const bridge = window.desktopUsagePanel;
++  const [snapshot, setSnapshot] = useState<DesktopUsageMenuSnapshot | null>(null);
++  useEffect(() => bridge?.onSnapshot(setSnapshot), [bridge]);
++  return snapshot && bridge ? (
++    <UsageQuotaPanel snapshot={snapshot} onResize={bridge.resize} onAction={bridge.request} />
++  ) : null;
++}
+diff --git a/apps/web/src/components/usage/UsageLimits.tsx b/apps/web/src/components/usage/UsageLimits.tsx
+index a36b220ee3efa27ee64a28121b3370780a6f2bdb..575092b873a0bbc2aec04fd02a5597ba39aff1de 100644
+--- a/apps/web/src/components/usage/UsageLimits.tsx
++++ b/apps/web/src/components/usage/UsageLimits.tsx
+@@ -8,7 +8,6 @@ import {
+   ServerProviderUsageWindow,
+   UsageProviderKind,
+ } from "@t3tools/contracts";
+-import { useAtomValue } from "@effect/atom-react";
+ import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
+ import {
+   type LimitPace,
+@@ -19,11 +18,9 @@ import {
+ } from "@t3tools/shared/usageLimits";
+ import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+ import { msg, T, useGT, useMessages } from "gt-react";
+-import { Fragment, useLayoutEffect, useState } from "react";
++import { Fragment, useState } from "react";
+ 
+ import { usePrimarySettings } from "../../hooks/useSettings";
+-import { observeResize } from "../../lib/observeResize";
+-import { environmentPresentations } from "../../state/presentation";
+ import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
+ import { serverEnvironment } from "../../state/server";
+ import { useAtomCommand } from "../../state/use-atom-command";
+@@ -39,9 +36,10 @@ import {
+ } from "../ui/alert-dialog";
+ import { Button } from "../ui/button";
+ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
++import { useFilteredLimitPresentations } from "./usageLimitState";
+ import { UsageLimitsPooled } from "./UsageLimitsPooled";
+ import { formatResetsIn, resetCreditChoices } from "@t3tools/shared/usageLimitsCopy";
+-import { PROVIDER_PRESENTATION } from "./usageProviders";
++import { barColor, usePaceMark } from "./UsageQuotaBar";
+ 
+ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof GaugeIcon }> = {
+   ahead: {
+@@ -55,13 +53,6 @@ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof Ga
+   },
+ };
+ 
+-export function barColor(driver: ServerProvider["driver"]): string {
+-  const presentation = Object.values(PROVIDER_PRESENTATION).find(
+-    (entry) => entry.driverKind === driver,
+-  );
+-  return presentation?.color ?? "var(--foreground)";
+-}
+-
+ export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
+   const Icon = PACE[pace].icon;
+   const m = useMessages();
+@@ -83,44 +74,6 @@ export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
+   );
+ }
+ 
+-// The tick sits in a transparent gap cut from the bar, clamped so it stays inside at 0% and 100%.
+-// The gap is a clip-path slot rather than a mask: a mask composites its layer and re-antialiases
+-// the bar's rounded ends, and the polygon reaches 1px past the box so only the slot edges clip.
+-function paceMarkStyles(timeLeft: number | null) {
+-  if (timeLeft === null) return null;
+-  const at = `clamp(3px, ${timeLeft}%, calc(100% - 3px))`;
+-  const [left, right] = [`calc(${at} - 3px)`, `calc(${at} + 3px)`];
+-  const [near, far] = ["-1px", "calc(100% + 1px)"];
+-  return {
+-    tick: { left: at },
+-    gap: {
+-      clipPath: `polygon(${near} ${near}, ${left} ${near}, ${left} ${far}, ${right} ${far}, ${right} ${near}, ${far} ${near}, ${far} ${far}, ${near} ${far})`,
+-    },
+-    // For a track painted on an element that also draws focus rings, which a clip would cut.
+-    gappedTrack: {
+-      backgroundColor: "transparent",
+-      backgroundImage: `linear-gradient(to right, var(--color-muted) ${left}, transparent ${left}, transparent ${right}, var(--color-muted) ${right})`,
+-    },
+-  };
+-}
+-
+-/**
+- * Pace mark styles for the bar given the returned ref. Below 6px there is no room for the gap
+- * and tick, so the bar draws neither, as the mobile bars do.
+- */
+-export function usePaceMark(timeLeft: number | null) {
+-  const [bar, setBar] = useState<HTMLElement | null>(null);
+-  const [roomy, setRoomy] = useState(false);
+-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the bar DOM width before paint and remeasures through a ResizeObserver
+-  useLayoutEffect(() => {
+-    if (!bar) return;
+-    const measure = () => setRoomy(bar.getBoundingClientRect().width >= 6);
+-    measure();
+-    return observeResize(bar, measure);
+-  }, [bar]);
+-  return [setBar, roomy ? paceMarkStyles(timeLeft) : null] as const;
+-}
+-
+ function WindowBar({
+   color,
+   window,
+@@ -398,35 +351,6 @@ export function UsageLimitsSection({
+   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+   readonly now: number;
+ }) {
+-  const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+-  const hiddenDrivers = new Set<ServerProvider["driver"]>(
+-    [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
+-  );
+-  const isVisible = (driver: ServerProvider["driver"]) => !hiddenDrivers.has(driver);
+-  const selected = new Map(
+-    [...presentations].flatMap(([id, presentation]) => {
+-      if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(id)) return [];
+-      const config = presentation.serverConfig;
+-      if (hiddenDrivers.size === 0 || config === null) return [[id, presentation] as const];
+-      return [
+-        [
+-          id,
+-          {
+-            ...presentation,
+-            serverConfig: {
+-              ...config,
+-              providers: config.providers.filter((provider) => isVisible(provider.driver)),
+-              usageLimitSources: config.usageLimitSources?.flatMap((source) => {
+-                const accounts = source.accounts.filter((account) => isVisible(account.driver));
+-                return accounts.length === 0 && source.accounts.length > 0
+-                  ? []
+-                  : [{ ...source, accounts }];
+-              }),
+-            },
+-          },
+-        ] as const,
+-      ];
+-    }),
+-  );
++  const selected = useFilteredLimitPresentations(selectedEnvironmentIds, hiddenProviders);
+   return <UsageLimitsPooled presentations={selected} now={now} />;
+ }
+diff --git a/apps/web/src/components/usage/UsageLimitsPooled.tsx b/apps/web/src/components/usage/UsageLimitsPooled.tsx
+index 245b3021e4cd2d64b1c38f0e283c20ba21a90885..5a72db16bb51bda0f915f8d705556cb06d5724e1 100644
+--- a/apps/web/src/components/usage/UsageLimitsPooled.tsx
++++ b/apps/web/src/components/usage/UsageLimitsPooled.tsx
+@@ -13,7 +13,6 @@ import {
+ } from "@t3tools/shared/usageLimits";
+ import { T, useGT, useMessages } from "gt-react";
+ import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
+-import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
+ import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
+ import {
+   createContext,
+@@ -37,7 +36,14 @@ import { Button } from "../ui/button";
+ import { OpenAI } from "../Icons";
+ import { Alert, AlertTitle } from "../ui/alert";
+ import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
+-import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
++import { PaceIcon, ResetCreditDialog, useResetCredit } from "./UsageLimits";
++import {
++  barColor,
++  quotaSegmentColor,
++  UsageQuotaBarPaint,
++  UsageQuotaProviderHeading,
++  usePaceMark,
++} from "./UsageQuotaBar";
+ import {
+   collectExternalUsageLinks,
+   collectLimitNotices,
+@@ -407,33 +413,12 @@ function SegmentTriggers({
+           />
+         }
+       >
+-        <div aria-hidden className="absolute inset-0 overflow-hidden rounded-md">
+-          {/* Clipped inside the rounded clip so the bar's own corners keep their antialiasing. */}
+-          <div className="absolute inset-0" style={paceMark?.gap}>
+-            <div
+-              aria-hidden
+-              className="absolute inset-y-0 left-0 rounded-md opacity-35"
+-              style={{ width: `${remaining}%`, backgroundColor: color }}
+-            />
+-            {remaining < 100 && reset && refillPercent > 0 ? (
+-              <div
+-                aria-hidden
+-                className="absolute inset-y-0 right-0 opacity-20"
+-                style={{
+-                  width: `${Math.min(100 - remaining, refillPercent)}%`,
+-                  backgroundImage: `repeating-linear-gradient(135deg, ${color} 0 1px, transparent 1px 5px)`,
+-                }}
+-              />
+-            ) : null}
+-          </div>
+-        </div>
+-        {paceMark ? (
+-          <span
+-            aria-hidden
+-            className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+-            style={paceMark.tick}
+-          />
+-        ) : null}
++        <UsageQuotaBarPaint
++          remaining={remaining}
++          refill={reset ? refillPercent : 0}
++          color={color}
++          paceMark={paceMark}
++        />
+         <span
+           aria-hidden
+           className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md text-3xs leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
+@@ -565,7 +550,7 @@ function PoolBar({
+               window={member.window}
+               reset={restores.get(member.account.key)}
+               refillPercent={member.refillPercent}
+-              color={normalizeProviderAccentColor(member.account.accentColor) ?? color}
++              color={quotaSegmentColor(color, member.account.accentColor)}
+               now={now}
+               index={position + 1}
+               showAccountName={pool.columns.length > 1}
+@@ -641,16 +626,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
+   const m = useMessages();
+   return (
+     <section className="flex flex-col gap-3">
+-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+-        <ProviderInstanceIcon
+-          driverKind={pool.driver}
+-          displayName={label}
+-          indicatorBackground="var(--background)"
+-          className="size-5"
+-          iconClassName="size-4 text-foreground/80"
+-        />
+-        {label}
+-      </h2>
++      <UsageQuotaProviderHeading driver={pool.driver} label={label} />
+       {windows.map((window) => {
+         const details =
+           pool.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool, m) : undefined;
+diff --git a/apps/web/src/components/usage/UsagePage.tsx b/apps/web/src/components/usage/UsagePage.tsx
+index adb05afb92ebb220460ff11023a5d3dcc88dd843..fc0a12bf0aa3ab6521b67426ef9475eedf091a08 100644
+--- a/apps/web/src/components/usage/UsagePage.tsx
++++ b/apps/web/src/components/usage/UsagePage.tsx
+@@ -15,7 +15,11 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
+ import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+ import * as AsyncResult from "effect/reactivity/AsyncResult";
+ import * as Cause from "effect/Cause";
+-import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
++import {
++  useRefreshFilteredLimits,
++  useUsageEnvironmentFilter,
++  useUsageWindow,
++} from "./usageLimitState";
+ import {
+   updatingProvidersLabel,
+   usageEnvironmentProgress,
+@@ -35,12 +39,11 @@ import { usePrimarySettings } from "../../hooks/useSettings";
+ import { resolveHour12 } from "../../timestampFormat";
+ import { appAtomRegistry } from "~/rpc/atomRegistry";
+ import { environmentPresentations } from "../../state/presentation";
+-import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
++import { primaryServerKeybindingsAtom } from "../../state/server";
+ import { isCommandPaletteOpen } from "../../commandPaletteBus";
+ import { isModelPickerOpen } from "../../modelPickerVisibility";
+ import { shortcutLabelForCommand } from "../../keybindings";
+ import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+-import { useAtomCommand } from "../../state/use-atom-command";
+ import {
+   enumerateDays,
+   enumerateHourStarts,
+@@ -51,7 +54,6 @@ import {
+   formatPercent,
+   formatTokens,
+   formatUsd,
+-  makeWindow,
+ } from "@t3tools/shared/usageFormat";
+ import { formatUsageContractMismatch, usageSourceMessages } from "@t3tools/shared/usageFormatCopy";
+ import { Button, InlineButton } from "../ui/button";
+@@ -101,11 +103,7 @@ import {
+   providersWithUsage,
+   rankProvidersByMetric,
+ } from "./usageProviders";
+-import {
+-  readUsagePagePreferences,
+-  saveUsagePagePreferences,
+-  type UsagePagePreferences,
+-} from "./usagePagePreferences";
++import { useUsagePagePreferences, type UsagePagePreferences } from "./usagePagePreferences";
+ 
+ function isUsageMetric(value: string | null | undefined): value is UsageMetric {
+   return METRIC_OPTIONS.some((option) => option.value === value);
+@@ -175,7 +173,7 @@ function UsageModelDialogHost({
+ }
+ 
+ export function UsagePage() {
+-  const [preferences, setPreferences] = useState(readUsagePagePreferences);
++  const [preferences, setPreferences] = useUsagePagePreferences();
+   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
+   const gt = useGT();
+@@ -191,24 +189,16 @@ export function UsagePage() {
+       ? gt("{label} ({shortcut})", { label: m(option.label), shortcut })
+       : m(option.label);
+   };
+-  const [windowSelection, setWindowSelection] = useState(() => ({
+-    days: preferences.windowDays,
+-    window: makeWindow(
+-      preferences.windowDays,
+-      undefined,
+-      preferences.windowDays === 1 ? "hour" : "day",
+-    ),
+-  }));
++  const windowDays = preferences.windowDays;
++  const { window, renew } = useUsageWindow(windowDays);
+   const metric = preferences.metric;
+   const showingLimits = metric === "limits";
+   const [isRefreshing, setIsRefreshing] = useState(false);
+   const [limitsNow, setLimitsNow] = useState(() => Date.now());
+   const refreshingRef = useRef(false);
+   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
+-  const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
+-    useState<ReadonlySet<EnvironmentId> | null>(null);
++  const { selectedEnvironmentIds, setSelectedEnvironmentIds } = useUsageEnvironmentFilter();
+   const hiddenProviders = new Set(preferences.hiddenProviders);
+-  const { days: windowDays, window } = windowSelection;
+   const isPast24Hours = windowDays === 1;
+   const {
+     merged: answeredUsage,
+@@ -227,26 +217,18 @@ export function UsagePage() {
+   const presentationsWithProviders = useAtomValue(
+     environmentPresentations.presentationsWithProvidersAtom,
+   );
+-  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+-    reportFailure: false,
+-  });
++  const refreshFilteredLimits = useRefreshFilteredLimits(selectedEnvironmentIds);
+ 
+   const canReadDiagnostics = selectedEnvironments.some(
+     (environment) => environment.canReadDiagnostics,
+   );
+ 
+   const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
+-    const nextPreferences = { ...preferences, ...patch };
+-    setPreferences(nextPreferences);
+-    saveUsagePagePreferences(nextPreferences);
++    setPreferences((current) => ({ ...current, ...patch }));
+   };
+   const selectWindow = (days: number) => {
+     if (!isUsageWindowDays(days)) return;
+     updatePreferences({ windowDays: days });
+-    setWindowSelection({
+-      days,
+-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+-    });
+   };
+   const selectMetric = (nextMetric: UsageMetric) => {
+     if (nextMetric === "limits") setLimitsNow(Date.now());
+@@ -254,20 +236,7 @@ export function UsagePage() {
+   };
+   const refreshLimits = (automatic = false) =>
+     // Settled so the timestamp still advances when a refresh throws.
+-    settlePromise(() =>
+-      Promise.all(
+-        Array.from(presentations, ([environmentId, presentation]) => {
+-          if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) return;
+-          if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
+-            return refreshUsageLimits(
+-              environmentId,
+-              () => refreshProviders({ environmentId, input: {} }),
+-              automatic,
+-            );
+-          }
+-        }),
+-      ),
+-    ).then((result) => {
++    settlePromise(() => refreshFilteredLimits(automatic)).then((result) => {
+       setLimitsNow(Date.now());
+       if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
+     });
+@@ -310,15 +279,7 @@ export function UsagePage() {
+       });
+       return;
+     }
+-    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
+-    if (
+-      nextWindow.sinceDay !== window.sinceDay ||
+-      nextWindow.untilDay !== window.untilDay ||
+-      nextWindow.sinceTime !== window.sinceTime ||
+-      nextWindow.untilTime !== window.untilTime
+-    ) {
+-      setWindowSelection({ days: windowDays, window: nextWindow });
+-    }
++    const nextWindow = renew();
+     refreshingRef.current = true;
+     setIsRefreshing(true);
+     void refresh(nextWindow).finally(() => {
+diff --git a/apps/web/src/components/usage/UsageProviderChart.tsx b/apps/web/src/components/usage/UsageProviderChart.tsx
+index b19c479ccd4a3d036be8b1f87cc276e10fbe3c4e..59d6ba8a73ad43a5b8457209a83992f3c69a022d 100644
+--- a/apps/web/src/components/usage/UsageProviderChart.tsx
++++ b/apps/web/src/components/usage/UsageProviderChart.tsx
+@@ -190,7 +190,7 @@ function valueToY(value: number, max: number) {
+   return max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP);
+ }
+ 
+-function buildChart(
++export function buildChart(
+   periods: readonly string[],
+   byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
+   metric: UsageChartMetric,
+diff --git a/apps/web/src/components/usage/UsageQuotaBar.tsx b/apps/web/src/components/usage/UsageQuotaBar.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..369281dc3d366db8e6c28b54b044ac75a7c0fc22
+--- /dev/null
++++ b/apps/web/src/components/usage/UsageQuotaBar.tsx
+@@ -0,0 +1,118 @@
++import type { ServerProvider } from "@t3tools/contracts";
++import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
++import { useLayoutEffect, useState } from "react";
++
++import { observeResize } from "../../lib/observeResize";
++import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
++import { PROVIDER_PRESENTATION } from "./usageProviders";
++
++export function barColor(driver: ServerProvider["driver"]): string {
++  const presentation = Object.values(PROVIDER_PRESENTATION).find(
++    (entry) => entry.driverKind === driver,
++  );
++  return presentation?.color ?? "var(--foreground)";
++}
++
++// The tick sits in a transparent gap cut from the bar, clamped so it stays inside at 0% and 100%.
++// The gap is a clip-path slot rather than a mask: a mask composites its layer and re-antialiases
++// the bar's rounded ends, and the polygon reaches 1px past the box so only the slot edges clip.
++function paceMarkStyles(timeLeft: number | null) {
++  if (timeLeft === null) return null;
++  const at = `clamp(3px, ${timeLeft}%, calc(100% - 3px))`;
++  const [left, right] = [`calc(${at} - 3px)`, `calc(${at} + 3px)`];
++  const [near, far] = ["-1px", "calc(100% + 1px)"];
++  return {
++    tick: { left: at },
++    gap: {
++      clipPath: `polygon(${near} ${near}, ${left} ${near}, ${left} ${far}, ${right} ${far}, ${right} ${near}, ${far} ${near}, ${far} ${far}, ${near} ${far})`,
++    },
++    // For a track painted on an element that also draws focus rings, which a clip would cut.
++    gappedTrack: {
++      backgroundColor: "transparent",
++      backgroundImage: `linear-gradient(to right, var(--color-muted) ${left}, transparent ${left}, transparent ${right}, var(--color-muted) ${right})`,
++    },
++  };
++}
++
++/**
++ * Pace mark styles for the bar given the returned ref. Below 6px there is no room for the gap
++ * and tick, so the bar draws neither, as the mobile bars do.
++ */
++export function usePaceMark(timeLeft: number | null) {
++  const [bar, setBar] = useState<HTMLElement | null>(null);
++  const [roomy, setRoomy] = useState(false);
++  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the bar DOM width before paint and remeasures through a ResizeObserver
++  useLayoutEffect(() => {
++    if (!bar) return;
++    const measure = () => setRoomy(bar.getBoundingClientRect().width >= 6);
++    measure();
++    return observeResize(bar, measure);
++  }, [bar]);
++  return [setBar, roomy ? paceMarkStyles(timeLeft) : null] as const;
++}
++
++export function quotaSegmentColor(color: string, accentColor: string | undefined): string {
++  return normalizeProviderAccentColor(accentColor) ?? color;
++}
++
++export function UsageQuotaProviderHeading(props: {
++  readonly driver: ServerProvider["driver"];
++  readonly label: string;
++}) {
++  return (
++    <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
++      <ProviderInstanceIcon
++        driverKind={props.driver}
++        displayName={props.label}
++        indicatorBackground="var(--background)"
++        className="size-5"
++        iconClassName="size-4 text-foreground/80"
++      />
++      {props.label}
++    </h2>
++  );
++}
++
++export function UsageQuotaBarPaint({
++  remaining,
++  refill,
++  color,
++  paceMark,
++}: {
++  readonly remaining: number;
++  readonly refill: number;
++  readonly color: string;
++  readonly paceMark: ReturnType<typeof paceMarkStyles>;
++}) {
++  return (
++    <>
++      <div aria-hidden className="absolute inset-0 overflow-hidden rounded-md">
++        <div className="absolute inset-0" style={paceMark?.gap}>
++          <div
++            data-quota-fill
++            className="absolute inset-y-0 left-0 rounded-md opacity-35"
++            style={{ width: `${remaining}%`, backgroundColor: color }}
++          />
++          {remaining < 100 && refill > 0 ? (
++            <div
++              data-quota-refill
++              className="absolute inset-y-0 right-0 opacity-20"
++              style={{
++                width: `${Math.min(100 - remaining, refill)}%`,
++                backgroundImage: `repeating-linear-gradient(135deg, ${color} 0 1px, transparent 1px 5px)`,
++              }}
++            />
++          ) : null}
++        </div>
++      </div>
++      {paceMark ? (
++        <span
++          aria-hidden
++          data-quota-pace
++          className="absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
++          style={paceMark.tick}
++        />
++      ) : null}
++    </>
++  );
++}
+diff --git a/apps/web/src/components/usage/usageLimitState.ts b/apps/web/src/components/usage/usageLimitState.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b15e5a7ec840eebac686edea6c676bad37ad8410
+--- /dev/null
++++ b/apps/web/src/components/usage/usageLimitState.ts
+@@ -0,0 +1,99 @@
++import { useEffect, useMemo } from "react";
++import { makeWindow } from "@t3tools/shared/usageFormat";
++import { useAtomValue } from "@effect/atom-react";
++import type { EnvironmentId, ServerProvider, UsageProviderKind } from "@t3tools/contracts";
++import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
++import { create } from "zustand";
++
++import { environmentPresentations } from "../../state/presentation";
++import { serverEnvironment } from "../../state/server";
++import { useAtomCommand } from "../../state/use-atom-command";
++import { PROVIDER_PRESENTATION } from "./usageProviders";
++
++export const useUsageEnvironmentFilter = create<{
++  selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
++  setSelectedEnvironmentIds: (ids: ReadonlySet<EnvironmentId> | null) => void;
++}>((set) => ({
++  selectedEnvironmentIds: null,
++  setSelectedEnvironmentIds: (selectedEnvironmentIds) => set({ selectedEnvironmentIds }),
++}));
++
++export function useRefreshFilteredLimits(
++  selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null,
++) {
++  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
++  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
++    reportFailure: false,
++  });
++  return (automatic: boolean) =>
++    Promise.all(
++      Array.from(presentations, ([environmentId, presentation]) => {
++        if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) return;
++        if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
++          return refreshUsageLimits(
++            environmentId,
++            () => refreshProviders({ environmentId, input: {} }),
++            automatic,
++          );
++        }
++      }),
++    );
++}
++
++export function useFilteredLimitPresentations(
++  selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null,
++  hiddenProviders: ReadonlySet<UsageProviderKind>,
++) {
++  const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
++  const hiddenDrivers = new Set<ServerProvider["driver"]>(
++    [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
++  );
++  const isVisible = (driver: ServerProvider["driver"]) => !hiddenDrivers.has(driver);
++  return new Map(
++    [...presentations].flatMap(([id, presentation]) => {
++      if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(id)) return [];
++      const config = presentation.serverConfig;
++      if (hiddenDrivers.size === 0 || config === null) return [[id, presentation] as const];
++      return [
++        [
++          id,
++          {
++            ...presentation,
++            serverConfig: {
++              ...config,
++              providers: config.providers.filter((provider) => isVisible(provider.driver)),
++              usageLimitSources: config.usageLimitSources?.flatMap((source) => {
++                const accounts = source.accounts.filter((account) => isVisible(account.driver));
++                return accounts.length === 0 && source.accounts.length > 0
++                  ? []
++                  : [{ ...source, accounts }];
++              }),
++            },
++          },
++        ] as const,
++      ];
++    }),
++  );
++}
++
++// Both surfaces use the same time boundaries, including the minute at the end of a 24h window.
++const useUsageWindowStore = create<{ days: number; window: ReturnType<typeof makeWindow> } | null>(
++  () => null,
++);
++export function useUsageWindow(days: number) {
++  const shared = useUsageWindowStore();
++  const initial = useMemo(() => makeWindow(days, undefined, days === 1 ? "hour" : "day"), [days]);
++  const update = (next: ReturnType<typeof makeWindow>) => {
++    const previous = useUsageWindowStore.getState();
++    if (previous?.days !== days || JSON.stringify(previous.window) !== JSON.stringify(next))
++      useUsageWindowStore.setState({ days, window: next }, true);
++    return next;
++  };
++  useEffect(() => {
++    update(initial);
++  }, [initial]);
++  return {
++    window: shared?.days === days ? shared.window : initial,
++    renew: () => update(makeWindow(days, undefined, days === 1 ? "hour" : "day")),
++  };
++}
+diff --git a/apps/web/src/components/usage/usagePagePreferences.ts b/apps/web/src/components/usage/usagePagePreferences.ts
+index 1aeaefc43da12b6834fd5c7c89c14d238d0a2878..497664d1b6538ca0f1726de1fc65418ca586d897 100644
+--- a/apps/web/src/components/usage/usagePagePreferences.ts
++++ b/apps/web/src/components/usage/usagePagePreferences.ts
+@@ -1,7 +1,11 @@
+ import { UsageProviderKind } from "@t3tools/contracts";
+ import * as Schema from "effect/Schema";
+ 
+-import { getLocalStorageItem, setLocalStorageItem } from "../../hooks/useLocalStorage";
++import {
++  getLocalStorageItem,
++  setLocalStorageItem,
++  useLocalStorage,
++} from "../../hooks/useLocalStorage";
+ 
+ const STORAGE_KEY = "t3code:usage-page-preferences:v1";
+ const UsagePagePreferencesSchema = Schema.Struct({
+@@ -29,3 +33,7 @@ export function saveUsagePagePreferences(preferences: UsagePagePreferences): voi
+     console.error("Could not save Usage page preferences.", error);
+   }
+ }
++
++export function useUsagePagePreferences() {
++  return useLocalStorage(STORAGE_KEY, DEFAULT_PREFERENCES, UsagePagePreferencesSchema);
++}
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5439ee39688eade31897af144b50a5f5383f290e..89b0c959f97999dd2bc7cdf8cec6e138fcdd8afa 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -7387,6 +7387,7 @@
+   "c05b2ac13a3ec7a0": "Höhere Werte machen Menüs, Dialoge und das Eingabefeld deckender.",
+   "a6c98b12b16f01a7": "Glas-Deckkraft auf Standard zurücksetzen",
+   "8d7f3714a5b7e094": "Glas-Deckkraft",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Lege fest, wie breit Nachrichten und das Eingabefeld auf großen Bildschirmen werden können.",
+   "92785adb251da88c": "Chatbreite auf Standard zurücksetzen",
+   "4d457bcce0c0e272": "Chatbreite",
+@@ -11560,6 +11561,7 @@
+   "7d0ab4cf50686d31": "proaktiv automatisch öffnen diff pull request pr rechter bereich agent abschluss",
+   "5256dd2ed3a24332": "befehlsmenü dollar $ slash /",
+   "ade91c8927c48175": "eingabefeld rich text tiptap fett kursiv markdown formatiert wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter return befehl strg ctrl mehrzeilig prompt neue zeile eingabefeld",
+   "9d1013084c46ecce": "warteschlange einreihen umlenken laufende runde senden standardverhalten eingabefeld",
+   "5b8b854de7ee6f4d": "installierte cli versionen neuer verfügbar codex claude cursor grok fx kiro opencode",
+@@ -11884,6 +11886,8 @@
+   "c6cf1b06e0433ca3": "Einrichtungsfortschritt",
+   "e0167c02ca493094": "{step}, Schritt {number}, {summary}",
+   "6389dee75a7cb536": "{step}, Schritt {number}",
++  "0a3e009bd529556c": "Nutzung konnte nicht aktualisiert werden",
++  "24b19145695f17f9": "Keine Nutzungsdaten verfügbar",
+   "5434b97f68b55d8f": "Über dem Tempo: Verbrauch schneller als das Zeitfenster vergeht",
+   "4e518c48e00f45a9": "Im Tempo des Zeitfensters",
+   "53e1b6487b5ddd6a": "Unter dem Tempo: Spielraum für den Rest des Zeitfensters",
+@@ -11950,6 +11954,9 @@
+   "77100b4211d5cf8c": "Navigationspfad der Nutzung",
+   "2f96360836544ae6": "Nutzungszeitraum",
+   "9e5383009cd3f93b": "Nutzungsmetrik",
++  "34b4b97a439fd09f": "{percent} % verbleibend",
++  "70332291f576f89c": "Zuletzt bekannt",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Limits aktualisieren",
+   "93a3e5869ba37c86": "Nutzung aktualisieren",
+   "5dc5cdee2153cd8d": "Verbinde eine Umgebung, um Limits zu sehen.",
+@@ -11964,6 +11971,8 @@
+   "2a57181a9d128463": "{share} der Kosten · {tokens} Tokens",
+   "d8a6a99fbdda0d3e": "{share} der Tokens · {cost}",
+   "ae86762909d453d2": "Verarbeitete Tokens pro Stunde",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Kosten pro Stunde",
+   "08f867ac9eaa7508": "Verarbeitete Tokens pro Tag",
+   "66ab3e4edb2b4fe7": "Kosten pro Tag",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index c378e66342505d9a5fa15fb0767a74aad29325d5..f994458836611659a76cec3ac292e67ae5b2c1c0 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -7395,6 +7395,7 @@
+   "c05b2ac13a3ec7a0": "Higher values make menus, dialogs, and the composer more solid.",
+   "a6c98b12b16f01a7": "Reset glass opacity to default",
+   "8d7f3714a5b7e094": "Glass opacity",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Set how wide messages and the composer can grow on large screens.",
+   "92785adb251da88c": "Reset chat width to default",
+   "4d457bcce0c0e272": "Chat width",
+@@ -11568,6 +11569,7 @@
+   "7d0ab4cf50686d31": "proactive automatically open diff pull request pr right panel agent completion",
+   "5256dd2ed3a24332": "command menu dollar $ slash /",
+   "ade91c8927c48175": "composer rich text tiptap bold italic markdown styled wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter return command ctrl multiline prompt new line composer",
+   "9d1013084c46ecce": "queue steer running turn send default behavior composer",
+   "5b8b854de7ee6f4d": "installed cli versions newer available codex claude cursor grok fx kiro opencode",
+@@ -11892,6 +11894,8 @@
+   "c6cf1b06e0433ca3": "Setup progress",
+   "e0167c02ca493094": "{step}, step {number}, {summary}",
+   "6389dee75a7cb536": "{step}, step {number}",
++  "0a3e009bd529556c": "Could not refresh usage",
++  "24b19145695f17f9": "No usage data available",
+   "5434b97f68b55d8f": "Ahead of pace: spending faster than the window elapses",
+   "4e518c48e00f45a9": "On pace with the window",
+   "53e1b6487b5ddd6a": "Under pace: headroom left for the rest of the window",
+@@ -11958,6 +11962,9 @@
+   "77100b4211d5cf8c": "Usage breadcrumb",
+   "2f96360836544ae6": "Usage period",
+   "9e5383009cd3f93b": "Usage metric",
++  "34b4b97a439fd09f": "{percent}% remaining",
++  "70332291f576f89c": "Last known",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Refresh limits",
+   "93a3e5869ba37c86": "Refresh usage",
+   "5dc5cdee2153cd8d": "Connect an environment to see limits.",
+@@ -11972,6 +11979,8 @@
+   "2a57181a9d128463": "{share} of cost · {tokens} tokens",
+   "d8a6a99fbdda0d3e": "{share} of tokens · {cost}",
+   "ae86762909d453d2": "Hourly processed tokens",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Hourly cost",
+   "08f867ac9eaa7508": "Daily processed tokens",
+   "66ab3e4edb2b4fe7": "Daily cost",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 1538850527718730a5137e340ce7f8f44d40e643..e42f0a6f4965cb9f45971011c01182237596a943 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -7388,6 +7388,7 @@
+   "c05b2ac13a3ec7a0": "Los valores más altos hacen más sólidos los menús, los cuadros de diálogo y el cuadro de mensaje.",
+   "a6c98b12b16f01a7": "Restablecer la opacidad del cristal al valor predeterminado",
+   "8d7f3714a5b7e094": "Opacidad del cristal",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Define cuánto pueden crecer los mensajes y el cuadro de mensaje en pantallas grandes.",
+   "92785adb251da88c": "Restablecer el ancho del chat al valor predeterminado",
+   "4d457bcce0c0e272": "Ancho del chat",
+@@ -11553,6 +11554,7 @@
+   "7d0ab4cf50686d31": "proactivo abrir automáticamente diff pull request pr panel derecho agente finalización",
+   "5256dd2ed3a24332": "menú de comandos dólar $ barra /",
+   "ade91c8927c48175": "cuadro mensaje compositor texto enriquecido tiptap negrita cursiva markdown con estilo wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter intro comando ctrl multilínea prompt nueva línea cuadro mensaje compositor",
+   "9d1013084c46ecce": "cola redirigir turno en ejecución enviar comportamiento predeterminado cuadro mensaje compositor",
+   "5b8b854de7ee6f4d": "instalado cli versiones más recientes disponibles codex claude cursor grok fx kiro opencode",
+@@ -11877,6 +11879,8 @@
+   "c6cf1b06e0433ca3": "Progreso de la configuración",
+   "e0167c02ca493094": "{step}, paso {number}, {summary}",
+   "6389dee75a7cb536": "{step}, paso {number}",
++  "0a3e009bd529556c": "No se pudo actualizar el uso",
++  "24b19145695f17f9": "Sin datos de uso",
+   "5434b97f68b55d8f": "Por encima del ritmo: gastas más rápido de lo que avanza la ventana",
+   "4e518c48e00f45a9": "Al ritmo de la ventana",
+   "53e1b6487b5ddd6a": "Por debajo del ritmo: queda margen para el resto de la ventana",
+@@ -11943,6 +11947,9 @@
+   "77100b4211d5cf8c": "Ruta de navegación de uso",
+   "2f96360836544ae6": "Periodo de uso",
+   "9e5383009cd3f93b": "Métrica de uso",
++  "34b4b97a439fd09f": "Queda un {percent} %",
++  "70332291f576f89c": "Último valor conocido",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Actualizar límites",
+   "93a3e5869ba37c86": "Actualizar uso",
+   "5dc5cdee2153cd8d": "Conecta un entorno para ver los límites.",
+@@ -11957,6 +11964,8 @@
+   "2a57181a9d128463": "{share} del coste · {tokens} tokens",
+   "d8a6a99fbdda0d3e": "{share} de los tokens · {cost}",
+   "ae86762909d453d2": "Tokens procesados por hora",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Coste por hora",
+   "08f867ac9eaa7508": "Tokens procesados por día",
+   "66ab3e4edb2b4fe7": "Coste por día",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..1663ea8cb18089d84bf0f2c2423918adbe5c5074 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -7389,6 +7389,7 @@
+   "c05b2ac13a3ec7a0": "Des valeurs plus élevées rendent les menus, les boîtes de dialogue et la zone de saisie plus opaques.",
+   "a6c98b12b16f01a7": "Réinitialiser l’opacité du verre à la valeur par défaut",
+   "8d7f3714a5b7e094": "Opacité du verre",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Définissez la largeur maximale des messages et de la zone de saisie sur les grands écrans.",
+   "92785adb251da88c": "Réinitialiser la largeur de la discussion à la valeur par défaut",
+   "4d457bcce0c0e272": "Largeur de la discussion",
+@@ -11558,6 +11559,7 @@
+   "7d0ab4cf50686d31": "proactif ouvrir automatiquement diff pull request pr panneau de droite agent fin",
+   "5256dd2ed3a24332": "commande menu dollar $ slash /",
+   "ade91c8927c48175": "zone de saisie texte enrichi tiptap gras italique markdown stylé wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "entrée retour commande ctrl multiligne prompt nouvelle ligne zone de saisie",
+   "9d1013084c46ecce": "file d’attente réorienter tour en cours envoyer comportement par défaut zone de saisie",
+   "5b8b854de7ee6f4d": "installé cli versions plus récentes disponibles codex claude cursor grok fx kiro opencode",
+@@ -11882,6 +11884,8 @@
+   "c6cf1b06e0433ca3": "Progression de la configuration",
+   "e0167c02ca493094": "{step}, étape {number}, {summary}",
+   "6389dee75a7cb536": "{step}, étape {number}",
++  "0a3e009bd529556c": "Impossible d’actualiser l’utilisation",
++  "24b19145695f17f9": "Aucune donnée d’utilisation",
+   "5434b97f68b55d8f": "En avance : consommation plus rapide que l’écoulement de la fenêtre",
+   "4e518c48e00f45a9": "Au rythme de la fenêtre",
+   "53e1b6487b5ddd6a": "En dessous du rythme : de la marge pour le reste de la fenêtre",
+@@ -11948,6 +11952,9 @@
+   "77100b4211d5cf8c": "Fil d’Ariane de l’utilisation",
+   "2f96360836544ae6": "Période d’utilisation",
+   "9e5383009cd3f93b": "Métrique d’utilisation",
++  "34b4b97a439fd09f": "{percent} % restants",
++  "70332291f576f89c": "Dernière valeur connue",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Actualiser les limites",
+   "93a3e5869ba37c86": "Actualiser l’utilisation",
+   "5dc5cdee2153cd8d": "Connectez un environnement pour voir les limites.",
+@@ -11962,6 +11969,8 @@
+   "2a57181a9d128463": "{share} du coût · {tokens} tokens",
+   "d8a6a99fbdda0d3e": "{share} des tokens · {cost}",
+   "ae86762909d453d2": "Tokens traités par heure",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Coût par heure",
+   "08f867ac9eaa7508": "Tokens traités par jour",
+   "66ab3e4edb2b4fe7": "Coût par jour",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index da6a34749df883d48fa5ec7db9008751c412cd09..d0f842f881f23762273f5e23a2a9137206f2110a 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -7354,6 +7354,7 @@
+   "c05b2ac13a3ec7a0": "値を大きくすると、メニュー、ダイアログ、入力欄の背景がより不透明になります。",
+   "a6c98b12b16f01a7": "ガラスの不透明度をデフォルトにリセット",
+   "8d7f3714a5b7e094": "ガラスの不透明度",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "大きな画面でメッセージと入力欄を広げられる幅を設定します。",
+   "92785adb251da88c": "チャットの幅をデフォルトにリセット",
+   "4d457bcce0c0e272": "チャットの幅",
+@@ -11508,6 +11509,7 @@
+   "7d0ab4cf50686d31": "自動 開く 差分 プルリクエスト PR 右パネル エージェント 完了 proactive",
+   "5256dd2ed3a24332": "コマンドメニュー ドル $ スラッシュ / command menu",
+   "ade91c8927c48175": "入力欄 リッチテキスト Tiptap 太字 斜体 Markdown スタイル WYSIWYG rich text",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "Enter Return Command Ctrl 複数行 プロンプト 改行 入力欄 shortcut",
+   "9d1013084c46ecce": "キュー 軌道修正 実行中 ターン 送信 デフォルト 動作 入力欄 queue steer",
+   "5b8b854de7ee6f4d": "インストール済み CLI バージョン 新しい 利用可能 Codex Claude Cursor Grok fx Kiro OpenCode update",
+@@ -11832,6 +11834,8 @@
+   "c6cf1b06e0433ca3": "セットアップの進行状況",
+   "e0167c02ca493094": "{step}、ステップ {number}、{summary}",
+   "6389dee75a7cb536": "{step}、ステップ {number}",
++  "0a3e009bd529556c": "使用量を更新できませんでした",
++  "24b19145695f17f9": "使用量データがありません",
+   "5434b97f68b55d8f": "ペース超過: 期間の経過より速く消費しています",
+   "4e518c48e00f45a9": "期間に対して適正なペース",
+   "53e1b6487b5ddd6a": "ペース以下: 期間の残りに余裕があります",
+@@ -11898,6 +11902,9 @@
+   "77100b4211d5cf8c": "使用量のパンくずリスト",
+   "2f96360836544ae6": "使用量の期間",
+   "9e5383009cd3f93b": "使用量の指標",
++  "34b4b97a439fd09f": "残り {percent}%",
++  "70332291f576f89c": "最後に取得した値",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "上限を更新",
+   "93a3e5869ba37c86": "使用量を更新",
+   "5dc5cdee2153cd8d": "上限を表示するには環境に接続してください。",
+@@ -11912,6 +11919,8 @@
+   "2a57181a9d128463": "コストの {share} · {tokens} トークン",
+   "d8a6a99fbdda0d3e": "トークンの {share} · {cost}",
+   "ae86762909d453d2": "1 時間ごとの処理トークン",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "1 時間ごとのコスト",
+   "08f867ac9eaa7508": "1 日ごとの処理トークン",
+   "66ab3e4edb2b4fe7": "1 日ごとのコスト",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..dd5832304651a6604e9d88e780bd3eca5f477c8c 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -7355,6 +7355,7 @@
+   "c05b2ac13a3ec7a0": "값이 높을수록 메뉴, 대화 상자, 입력창이 더 불투명해집니다.",
+   "a6c98b12b16f01a7": "유리 불투명도 기본값으로 재설정",
+   "8d7f3714a5b7e094": "유리 불투명도",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "큰 화면에서 메시지와 입력창이 넓어질 수 있는 폭을 설정합니다.",
+   "92785adb251da88c": "채팅 너비 기본값으로 재설정",
+   "4d457bcce0c0e272": "채팅 너비",
+@@ -11505,6 +11506,7 @@
+   "7d0ab4cf50686d31": "자동 열기 변경 사항 풀 리퀘스트 PR 오른쪽 패널 에이전트 완료",
+   "5256dd2ed3a24332": "명령 메뉴 달러 $ 슬래시 /",
+   "ade91c8927c48175": "입력창 서식 있는 텍스트 tiptap 굵게 기울임 마크다운 스타일 wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter return command ctrl 여러 줄 프롬프트 새 줄 입력창",
+   "9d1013084c46ecce": "대기열 방향 조정 실행 중 턴 보내기 기본 동작 입력창",
+   "5b8b854de7ee6f4d": "설치된 CLI 버전 최신 사용 가능 Codex Claude Cursor Grok fx Kiro OpenCode",
+@@ -11829,6 +11831,8 @@
+   "c6cf1b06e0433ca3": "설정 진행률",
+   "e0167c02ca493094": "{step}, {number}단계, {summary}",
+   "6389dee75a7cb536": "{step}, {number}단계",
++  "0a3e009bd529556c": "사용량을 새로 고치지 못했습니다",
++  "24b19145695f17f9": "사용량 데이터 없음",
+   "5434b97f68b55d8f": "속도 초과: 기간이 지나는 것보다 빠르게 사용 중",
+   "4e518c48e00f45a9": "기간에 맞는 속도",
+   "53e1b6487b5ddd6a": "속도 여유: 남은 기간 동안 여유가 있음",
+@@ -11895,6 +11899,9 @@
+   "77100b4211d5cf8c": "사용량 이동 경로",
+   "2f96360836544ae6": "사용량 기간",
+   "9e5383009cd3f93b": "사용량 지표",
++  "34b4b97a439fd09f": "{percent}% 남음",
++  "70332291f576f89c": "마지막으로 확인된 값",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "한도 새로 고침",
+   "93a3e5869ba37c86": "사용량 새로 고침",
+   "5dc5cdee2153cd8d": "한도를 보려면 환경을 연결하세요.",
+@@ -11909,6 +11916,8 @@
+   "2a57181a9d128463": "비용의 {share} · 토큰 {tokens}개",
+   "d8a6a99fbdda0d3e": "토큰의 {share} · {cost}",
+   "ae86762909d453d2": "시간별 처리 토큰",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "시간별 비용",
+   "08f867ac9eaa7508": "일별 처리 토큰",
+   "66ab3e4edb2b4fe7": "일별 비용",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..6812596ed7ca555bfdb57e9db6fd5b1802a984ff 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -7388,6 +7388,7 @@
+   "c05b2ac13a3ec7a0": "Valores mais altos deixam menus, caixas de diálogo e o editor de mensagens mais sólidos.",
+   "a6c98b12b16f01a7": "Redefinir a opacidade do vidro para o padrão",
+   "8d7f3714a5b7e094": "Opacidade do vidro",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Define até que largura as mensagens e o editor de mensagens podem crescer em telas grandes.",
+   "92785adb251da88c": "Redefinir a largura do chat para o padrão",
+   "4d457bcce0c0e272": "Largura do chat",
+@@ -11557,6 +11558,7 @@
+   "7d0ab4cf50686d31": "proativo abrir automaticamente diff pull request pr painel direito agente conclusão",
+   "5256dd2ed3a24332": "menu de comandos cifrão $ barra /",
+   "ade91c8927c48175": "editor de mensagens rich text tiptap negrito itálico markdown estilizado wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter return command ctrl várias linhas prompt nova linha editor de mensagens",
+   "9d1013084c46ecce": "fila enfileirar direcionar turno em execução enviar comportamento padrão editor de mensagens",
+   "5b8b854de7ee6f4d": "cli instaladas versões mais novas disponíveis codex claude cursor grok fx kiro opencode",
+@@ -11881,6 +11883,8 @@
+   "c6cf1b06e0433ca3": "Progresso da configuração",
+   "e0167c02ca493094": "{step}, etapa {number}, {summary}",
+   "6389dee75a7cb536": "{step}, etapa {number}",
++  "0a3e009bd529556c": "Não foi possível atualizar o uso",
++  "24b19145695f17f9": "Sem dados de uso",
+   "5434b97f68b55d8f": "Acima do ritmo: consumindo mais rápido do que a janela passa",
+   "4e518c48e00f45a9": "No ritmo da janela",
+   "53e1b6487b5ddd6a": "Abaixo do ritmo: sobra margem para o resto da janela",
+@@ -11947,6 +11951,9 @@
+   "77100b4211d5cf8c": "Trilha de navegação do uso",
+   "2f96360836544ae6": "Período de uso",
+   "9e5383009cd3f93b": "Métrica de uso",
++  "34b4b97a439fd09f": "{percent}% restante",
++  "70332291f576f89c": "Último valor conhecido",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Atualizar limites",
+   "93a3e5869ba37c86": "Atualizar uso",
+   "5dc5cdee2153cd8d": "Conecte um ambiente para ver os limites.",
+@@ -11961,6 +11968,8 @@
+   "2a57181a9d128463": "{share} do custo · {tokens} tokens",
+   "d8a6a99fbdda0d3e": "{share} dos tokens · {cost}",
+   "ae86762909d453d2": "Tokens processados por hora",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Custo por hora",
+   "08f867ac9eaa7508": "Tokens processados por dia",
+   "66ab3e4edb2b4fe7": "Custo por dia",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..ec5b4a9bea23723948b89185e1c60c3dd26f073b 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -7388,6 +7388,7 @@
+   "c05b2ac13a3ec7a0": "Чем выше значение, тем плотнее меню, диалоги и поле ввода.",
+   "a6c98b12b16f01a7": "Сбросить прозрачность стекла к значению по умолчанию",
+   "8d7f3714a5b7e094": "Непрозрачность стекла",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Задайте, насколько широкими могут быть сообщения и поле ввода на больших экранах.",
+   "92785adb251da88c": "Сбросить ширину чата к значению по умолчанию",
+   "4d457bcce0c0e272": "Ширина чата",
+@@ -11558,6 +11559,7 @@
+   "7d0ab4cf50686d31": "заблаговременно автоматически открывать дифф пул-реквест pr правая панель агент завершение",
+   "5256dd2ed3a24332": "меню команд доллар $ слеш /",
+   "ade91c8927c48175": "поле ввода форматирование tiptap жирный курсив markdown стили wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter return command ctrl многострочный промпт новая строка поле ввода",
+   "9d1013084c46ecce": "очередь корректировка выполняющийся ход отправить поведение по умолчанию поле ввода",
+   "5b8b854de7ee6f4d": "установленные cli версии новее доступно codex claude cursor grok fx kiro opencode",
+@@ -11882,6 +11884,8 @@
+   "c6cf1b06e0433ca3": "Прогресс настройки",
+   "e0167c02ca493094": "{step}, шаг {number}, {summary}",
+   "6389dee75a7cb536": "{step}, шаг {number}",
++  "0a3e009bd529556c": "Не удалось обновить данные",
++  "24b19145695f17f9": "Нет данных об использовании",
+   "5434b97f68b55d8f": "Опережение: расход быстрее, чем идёт окно",
+   "4e518c48e00f45a9": "В темпе окна",
+   "53e1b6487b5ddd6a": "Ниже темпа: остаётся запас на оставшуюся часть окна",
+@@ -11948,6 +11952,9 @@
+   "77100b4211d5cf8c": "Навигация по использованию",
+   "2f96360836544ae6": "Период использования",
+   "9e5383009cd3f93b": "Метрика использования",
++  "34b4b97a439fd09f": "Осталось {percent}%",
++  "70332291f576f89c": "Последнее известное значение",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Обновить лимиты",
+   "93a3e5869ba37c86": "Обновить использование",
+   "5dc5cdee2153cd8d": "Подключите окружение, чтобы увидеть лимиты.",
+@@ -11962,6 +11969,8 @@
+   "2a57181a9d128463": "{share} стоимости · {tokens} токенов",
+   "d8a6a99fbdda0d3e": "{share} токенов · {cost}",
+   "ae86762909d453d2": "Обработанные токены по часам",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Стоимость по часам",
+   "08f867ac9eaa7508": "Обработанные токены по дням",
+   "66ab3e4edb2b4fe7": "Стоимость по дням",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..659f7b5e4498a7e0d0319e471b60327eb0ff4373 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -7394,6 +7394,7 @@
+   "c05b2ac13a3ec7a0": "Högre värden gör menyer, dialogrutor och inmatningsfältet mer täckande.",
+   "a6c98b12b16f01a7": "Återställ glasopacitet till standard",
+   "8d7f3714a5b7e094": "Glasopacitet",
++  "00fa324adfe3d69c": "Show limits in the menu bar",
+   "03338c6aec8edacd": "Ange hur breda meddelanden och inmatningsfältet kan bli på stora skärmar.",
+   "92785adb251da88c": "Återställ chattbredd till standard",
+   "4d457bcce0c0e272": "Chattbredd",
+@@ -11566,6 +11567,7 @@
+   "7d0ab4cf50686d31": "proaktiv öppna automatiskt diff pull request pr högerpanel agent slutförd",
+   "5256dd2ed3a24332": "kommandomeny dollar $ snedstreck /",
+   "ade91c8927c48175": "inmatningsfält formaterad text tiptap fet kursiv markdown formaterad wysiwyg",
++  "66be8ce21123126d": "macOS menu bar remaining quota usage limits",
+   "34d74827c2a8b009": "enter retur command ctrl flera rader prompt ny rad inmatningsfält",
+   "9d1013084c46ecce": "kö styr om pågående omgång skicka standardbeteende inmatningsfält",
+   "5b8b854de7ee6f4d": "installerade cli versioner nyare tillgänglig codex claude cursor grok fx kiro opencode",
+@@ -11890,6 +11892,8 @@
+   "c6cf1b06e0433ca3": "Konfigurationsförlopp",
+   "e0167c02ca493094": "{step}, steg {number}, {summary}",
+   "6389dee75a7cb536": "{step}, steg {number}",
++  "0a3e009bd529556c": "Kunde inte uppdatera användningen",
++  "24b19145695f17f9": "Inga användningsdata",
+   "5434b97f68b55d8f": "Före takten: förbrukar snabbare än fönstret löper",
+   "4e518c48e00f45a9": "I takt med fönstret",
+   "53e1b6487b5ddd6a": "Under takten: utrymme kvar för resten av fönstret",
+@@ -11956,6 +11960,9 @@
+   "77100b4211d5cf8c": "Sökväg i användning",
+   "2f96360836544ae6": "Användningsperiod",
+   "9e5383009cd3f93b": "Användningsmått",
++  "34b4b97a439fd09f": "{percent}% kvar",
++  "70332291f576f89c": "Senast kända",
++  "7b87967442dee0be": "No usage limits available",
+   "67070d5478b6aeec": "Uppdatera gränser",
+   "93a3e5869ba37c86": "Uppdatera användning",
+   "5dc5cdee2153cd8d": "Anslut en miljö för att se gränser.",
+@@ -11970,6 +11977,8 @@
+   "2a57181a9d128463": "{share} av kostnaden · {tokens} token",
+   "d8a6a99fbdda0d3e": "{share} av token · {cost}",
+   "ae86762909d453d2": "Bearbetade token per timme",
++  "a411555226816eff": "Open Usage…",
++  "4339ed489476e66d": "Could not refresh limits",
+   "ef5c1428abcda046": "Kostnad per timme",
+   "08f867ac9eaa7508": "Bearbetade token per dag",
+   "66ab3e4edb2b4fe7": "Kostnad per dag",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..2d6ed264cea3172b1de05f296d121550f5196b24 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -7403,6 +7403,7 @@
+   "c05b2ac13a3ec7a0": "数值越高，菜单、对话框和输入框越不透明。",
+   "a6c98b12b16f01a7": "重置玻璃不透明度为默认值",
+   "8d7f3714a5b7e094": "毛玻璃不透明度",
++  "00fa324adfe3d69c": "在菜单栏显示额度",
+   "03338c6aec8edacd": "设置大屏幕上消息和输入框的最大宽度。",
+   "92785adb251da88c": "重置聊天宽度为默认值",
+   "4d457bcce0c0e272": "聊天宽度",
+@@ -11582,6 +11583,7 @@
+   "7d0ab4cf50686d31": "主动 自动打开 差异 PR pr 右侧面板 智能体 完成",
+   "5256dd2ed3a24332": "命令 菜单 美元 $ 斜杠 /",
+   "ade91c8927c48175": "输入框 富文本 tiptap 粗体 斜体 markdown 样式 所见即所得",
++  "66be8ce21123126d": "macOS 菜单栏 剩余额度 用量 限额",
+   "34d74827c2a8b009": "enter 回车 command ctrl 多行 提示词 换行 输入框",
+   "9d1013084c46ecce": "排队 引导 运行中 轮次 发送 默认行为 输入框",
+   "5b8b854de7ee6f4d": "已安装 cli 版本 更新 可用 codex claude cursor grok fx kiro opencode",
+@@ -11907,6 +11909,8 @@
+   "c6cf1b06e0433ca3": "设置进度",
+   "e0167c02ca493094": "{step}，第 {number} 步，{summary}",
+   "6389dee75a7cb536": "{step}，第 {number} 步",
++  "0a3e009bd529556c": "刷新用量失败",
++  "24b19145695f17f9": "暂无用量数据",
+   "5434b97f68b55d8f": "消耗偏快：用量消耗进度超过本周期的时间进度",
+   "4e518c48e00f45a9": "与时间进度一致",
+   "53e1b6487b5ddd6a": "消耗偏慢：本周期剩余时间内还有充足余量",
+@@ -11973,6 +11977,9 @@
+   "77100b4211d5cf8c": "用量导航",
+   "2f96360836544ae6": "用量时间范围",
+   "9e5383009cd3f93b": "用量指标",
++  "34b4b97a439fd09f": "剩余 {percent}%",
++  "70332291f576f89c": "上次已知",
++  "7b87967442dee0be": "暂无额度数据",
+   "67070d5478b6aeec": "刷新限制",
+   "93a3e5869ba37c86": "刷新用量",
+   "5dc5cdee2153cd8d": "连接一个环境即可查看用量限制。",
+@@ -11987,6 +11994,8 @@
+   "2a57181a9d128463": "占费用的 {share} · {tokens} token",
+   "d8a6a99fbdda0d3e": "占 token 的 {share} · {cost}",
+   "ae86762909d453d2": "每小时处理的 token",
++  "a411555226816eff": "打开用量页…",
++  "4339ed489476e66d": "无法刷新额度",
+   "ef5c1428abcda046": "每小时费用",
+   "08f867ac9eaa7508": "每天处理的 token",
+   "66ab3e4edb2b4fe7": "每天费用",
+diff --git a/apps/web/src/usage-panel.tsx b/apps/web/src/usage-panel.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3cab480ef823c2b04a917a0c282a30f636371e3d
+--- /dev/null
++++ b/apps/web/src/usage-panel.tsx
+@@ -0,0 +1,11 @@
++import { createRoot } from "react-dom/client";
++import "@fontsource-variable/inter";
++import "./index.css";
++import { DesktopUsagePanel } from "./components/usage/DesktopUsagePanel";
++
++const appearance = window.matchMedia("(prefers-color-scheme: dark)");
++const applyAppearance = () => document.documentElement.classList.toggle("dark", appearance.matches);
++applyAppearance();
++appearance.addEventListener("change", applyAppearance);
++
++createRoot(document.getElementById("root")!).render(<DesktopUsagePanel />);
+diff --git a/apps/web/src/vite-env.d.ts b/apps/web/src/vite-env.d.ts
+index 63f7cca9cbfc679ee82dee992176e51d0cbac8c8..f7182d307ef6d200967b2d51ca31ace76f25b9bf 100644
+--- a/apps/web/src/vite-env.d.ts
++++ b/apps/web/src/vite-env.d.ts
+@@ -1,6 +1,6 @@
+ /// <reference types="vite-plus/client" />
+ 
+-import type { DesktopBridge, ThreadId } from "@t3tools/contracts";
++import type { DesktopBridge, DesktopUsagePanelBridge, ThreadId } from "@t3tools/contracts";
+ 
+ interface ImportMetaEnv {
+   readonly VITE_HTTP_URL: string;
+@@ -26,6 +26,7 @@ interface ImportMeta {
+ declare global {
+   interface Window {
+     desktopBridge?: DesktopBridge;
++    desktopUsagePanel?: DesktopUsagePanelBridge;
+     /** Dev builds only, from DevReplayHost. Agents call these from the browser console. */
+     t3dev?: {
+       readonly replayScenarios: () => ReadonlyArray<string>;
+diff --git a/apps/web/usage-panel.html b/apps/web/usage-panel.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..6915319bc007c01fa5308c70d84271c254a2f658
+--- /dev/null
++++ b/apps/web/usage-panel.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>T3 Code</title>
++  </head>
++  <body>
++    <div id="root" style="height: 100dvh"></div>
++    <script type="module" src="/src/usage-panel.tsx"></script>
++  </body>
++</html>
+diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
+index 073fca7943d3e0008739612e97f90647d039b3ed..bf42a0e58010a3e7f83f19dfbf8b003ea3555016 100644
+--- a/apps/web/vite.config.ts
++++ b/apps/web/vite.config.ts
+@@ -429,6 +429,7 @@ export default defineConfig(({ command }) => {
+       sourcemap: buildSourcemap,
+       ...(builtDev ? { watch: { exclude: rolldownWatchExclude } } : {}),
+       rolldownOptions: {
++        input: ["index.html", "usage-panel.html"],
+         output: {
+           // PDF.js resolves decoder modules and ICC data relative to wasmUrl.
+           assetFileNames: (asset) =>
+diff --git a/packages/contracts/src/ipc.ts b/packages/contracts/src/ipc.ts
+index 77a523c03608f6de2b0b87afbcb5230e53eec38e..3b26683b7dd8749b2eb8726567660cfc652c8e7f 100644
+--- a/packages/contracts/src/ipc.ts
++++ b/packages/contracts/src/ipc.ts
+@@ -4,6 +4,7 @@ import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
+ import { SnapShotSource } from "./chatAttachment.ts";
+ import { EnvironmentId, PortSchema, TrimmedNonEmptyString } from "./baseSchemas.ts";
+ import { BrowserProfileId } from "./browserProfile.ts";
++import { ProviderDriverKind } from "./providerInstance.ts";
+ import type {
+   BrowserImportResult,
+   BrowserImportSource,
+@@ -1085,7 +1086,85 @@ export type DesktopMediaRead = typeof DesktopMediaReadSchema.Type;
+ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
+ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
+ 
++const DesktopUsageQuotaSegment = Schema.Struct({
++  label: Schema.String,
++  color: Schema.String,
++  remaining: Schema.Number,
++  refill: Schema.Number,
++  timeLeft: Schema.NullOr(Schema.Number),
++});
++export type DesktopUsageQuotaSegment = typeof DesktopUsageQuotaSegment.Type;
++
++const DesktopUsageMetric = Schema.Literals(["cost", "tokens", "limits"]);
++export const DesktopUsageMenuSnapshot = Schema.Struct({
++  navigation: Schema.optional(
++    Schema.Struct({
++      metric: DesktopUsageMetric,
++      options: Schema.Array(Schema.Struct({ value: DesktopUsageMetric, label: Schema.String })),
++    }),
++  ),
++  summary: Schema.optional(
++    Schema.Struct({
++      period: Schema.String,
++      trend: Schema.optional(
++        Schema.Struct({
++          title: Schema.String,
++          first: Schema.String,
++          last: Schema.String,
++          peak: Schema.String,
++          paths: Schema.Array(
++            Schema.Struct({ line: Schema.String, area: Schema.String, color: Schema.String }),
++          ),
++        }),
++      ),
++      total: Schema.NullOr(Schema.String),
++      status: Schema.NullOr(Schema.String),
++      rows: Schema.Array(
++        Schema.Struct({ driver: ProviderDriverKind, label: Schema.String, value: Schema.String }),
++      ),
++    }),
++  ),
++  sections: Schema.Array(
++    Schema.Struct({
++      driver: ProviderDriverKind,
++      title: Schema.String,
++      rows: Schema.Array(
++        Schema.Struct({
++          id: Schema.String,
++          label: Schema.String,
++          remaining: Schema.Number,
++          remainingLabel: Schema.String,
++          reset: Schema.NullOr(Schema.String),
++          stale: Schema.NullOr(Schema.String),
++          segments: Schema.Array(Schema.NullOr(DesktopUsageQuotaSegment)),
++        }),
++      ),
++    }),
++  ),
++  title: Schema.String,
++  empty: Schema.String,
++  refresh: Schema.String,
++  openUsage: Schema.String,
++  refreshing: Schema.Boolean,
++  refreshFailed: Schema.NullOr(Schema.String),
++});
++export type DesktopUsageMenuSnapshot = typeof DesktopUsageMenuSnapshot.Type;
++export type DesktopUsageMenuAction =
++  | "refresh"
++  | "show"
++  | "hide"
++  | "open"
++  | typeof DesktopUsageMetric.Type;
++
++export interface DesktopUsagePanelBridge {
++  onSnapshot: (listener: (snapshot: DesktopUsageMenuSnapshot | null) => void) => () => void;
++  resize: (height: number) => void;
++  request: (action: Exclude<DesktopUsageMenuAction, "show" | "hide">) => void;
++}
++
+ export interface DesktopBridge {
++  updateUsageMenu?: (snapshot: DesktopUsageMenuSnapshot | null) => void;
++  onUsageMenuAction?: (listener: (action: DesktopUsageMenuAction) => void) => () => void;
+   getAppBranding: () => DesktopAppBranding | null;
+   /** `null` until the desktop host has read the login shell's environment; ask again later. */
+   getRelayTelemetryEnabled: () => boolean | null;
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 378b8af0e466f81d71e1c4efc130b41641edebf0..d838c1241e97bb03d3852d9542c08c33ff91cded 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -519,6 +519,7 @@ export const ClientSettingsSchema = Schema.Struct({
+   pullRequestLinksOpenInApp: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+ 
+   composerRichTextEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
++  showMenuBarUsageLimits: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+   sendShortcut: Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"]).pipe(
+     Schema.withDecodingDefault(Effect.succeed("enter")),
+   ),
+@@ -2099,6 +2100,7 @@ export const ClientSettingsPatch = Schema.Struct({
+   ),
+   pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
+   composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
++  showMenuBarUsageLimits: Schema.optionalKey(Schema.Boolean),
+   sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
+   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
+   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
