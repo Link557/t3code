@@ -44,12 +44,12 @@ it.each([false, true])(
 );
 
 it.each([
-  { platform: "win32", browserPlatform: "Linux x86_64", visible: true },
-  { platform: "darwin", browserPlatform: "Win32", visible: false },
+  { platform: "win32", browserPlatform: "Win32", visible: true },
+  { platform: "darwin", browserPlatform: "MacIntel", visible: false },
   { platform: "linux", browserPlatform: "Linux x86_64", visible: false },
   { platform: undefined, browserPlatform: "Win32", visible: false },
 ])(
-  "uses the desktop bridge platform ($platform) to decide whether to show the tray setting",
+  "shows the tray setting only in the Windows desktop app ($browserPlatform, bridge $platform)",
   async ({ platform, browserPlatform, visible }) => {
     using _bridge = stubGlobal(
       "desktopBridge",
