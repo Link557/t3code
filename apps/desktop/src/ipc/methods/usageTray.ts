@@ -13,6 +13,11 @@ import { DesktopWindow } from "../../window/DesktopWindow.ts";
 import { GET_USAGE_TRAY_ENABLED_CHANNEL, SET_USAGE_TRAY_ENABLED_CHANNEL } from "../channels.ts";
 import { DesktopIpc, makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
 
+class DesktopUsageTrayCreateError extends Schema.TaggedError<DesktopUsageTrayCreateError>()(
+  "DesktopUsageTrayCreateError",
+  { cause: Schema.Defect() },
+) {}
+
 export const installUsageTray = Effect.fn("desktop.ipc.installUsageTray")(function* () {
   const environment = yield* DesktopEnvironment;
   if (environment.platform !== "win32") return;
@@ -51,10 +56,20 @@ export const installUsageTray = Effect.fn("desktop.ipc.installUsageTray")(functi
         yield* Effect.logWarning("Cannot show Usage tray icon: missing Windows icon");
         return;
       }
-      tray = new Electron.Tray(ico.value);
-      tray.setToolTip(environment.displayName);
-      tray.on("click", openUsage);
-      updateMenu();
+      yield* Effect.try({
+        try: () => {
+          tray = new Electron.Tray(ico.value);
+          tray.setToolTip(environment.displayName);
+          tray.on("click", openUsage);
+          updateMenu();
+        },
+        catch: (cause) => new DesktopUsageTrayCreateError({ cause }),
+      }).pipe(
+        Effect.catch((error) => {
+          destroy();
+          return Effect.logWarning("Cannot show Usage tray icon", error);
+        }),
+      );
     }
   });
   yield* app.on("before-quit", close);
