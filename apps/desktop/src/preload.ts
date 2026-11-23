@@ -156,6 +156,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   getLocalEnvironmentBearerToken: () =>
     ipcRenderer.invoke(IpcChannels.GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL),
+  getUsageTrayEnabled: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_USAGE_TRAY_ENABLED_CHANNEL) === true,
+  setUsageTrayEnabled: (enabled) =>
+    ipcRenderer.invoke(IpcChannels.SET_USAGE_TRAY_ENABLED_CHANNEL, enabled),
   getLocalEnvironmentEnabled: () =>
     ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL) !== false,
   setLocalEnvironmentEnabled: (enabled) =>

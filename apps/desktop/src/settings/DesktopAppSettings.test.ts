@@ -137,6 +137,9 @@ describe("DesktopSettings", () => {
           yield* settings.setWslBackendEnabled(true);
           yield* settings.setWslDistro("Ubuntu");
           yield* settings.setServerExposureMode("network-accessible");
+          assert.isFalse((yield* settings.get).usageTrayEnabled);
+          yield* settings.setUsageTrayEnabled(true);
+          assert.isTrue((yield* settings.load).usageTrayEnabled);
           const before = yield* settings.get;
           assert.isTrue((yield* settings.setLocalEnvironmentEnabled(false)).changed);
           assert.deepEqual(yield* settings.load, { ...before, localEnvironmentEnabled: false });
@@ -224,6 +227,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          usageTrayEnabled: false,
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
           mainWindowMaximized: false,
@@ -377,6 +381,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          usageTrayEnabled: false,
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,
@@ -406,6 +411,7 @@ describe("DesktopSettings", () => {
 
         assert.deepEqual(yield* settings.load, {
           linuxPasswordStore: "auto",
+          usageTrayEnabled: false,
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,

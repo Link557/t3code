@@ -934,6 +934,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["ask before delete stop process shell console history"],
   },
   {
+    id: "usage-tray",
+    title: msg("Show Usage in the notification area"),
+    to: "/settings/general",
+    searchTerms: ["system tray taskbar icon usage"],
+    desktopOnly: true,
+    windowsOnly: true,
+  },
+  {
     id: "quit-confirmation",
     title: msg("Quit shortcut"),
     to: "/settings/general",

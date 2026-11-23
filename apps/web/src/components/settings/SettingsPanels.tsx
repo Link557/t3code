@@ -80,7 +80,7 @@ import {
 } from "../../modelSelection";
 import { useTextGenerationTargets } from "../../textGenerators";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
-import { isMacPlatform } from "../../lib/utils";
+import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import {
   useEnvironmentProviders,
   useEnvironments,
@@ -169,6 +169,40 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
 };
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+function UsageTraySetting({ bridge }: { bridge: NonNullable<Window["desktopBridge"]> }) {
+  const setting = useSearchableSetting();
+  const gt = useGT();
+  const [enabled, setEnabled] = useState(() => bridge.getUsageTrayEnabled());
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = async (checked: boolean) => {
+    setPending(true);
+    setError(null);
+    try {
+      await bridge.setUsageTrayEnabled(checked);
+      setEnabled(checked);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : gt("Couldn't change this setting."));
+    }
+    setPending(false);
+  };
+  return (
+    <SettingsRow
+      {...setting("usage-tray")}
+      devicePreference
+      description={error}
+      control={
+        <Switch
+          checked={enabled}
+          disabled={pending}
+          onCheckedChange={update}
+          aria-label={gt("Show Usage in the notification area")}
+        />
+      }
+    />
+  );
+}
+
 function AboutVersionSection() {
   const setting = useSearchableSetting();
   const gt = useGT();
@@ -1086,6 +1120,9 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        {isElectron && isWindowsPlatform(navigator.platform) && window.desktopBridge ? (
+          <UsageTraySetting bridge={window.desktopBridge} />
+        ) : null}
         {isElectron ? (
           <SettingsRow
             {...setting("quit-confirmation")}

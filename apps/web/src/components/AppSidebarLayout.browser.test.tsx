@@ -15,6 +15,7 @@ vi.mock(import("../state/server"), async (original) => {
 // The thread list needs live environments; the shortcut lives in the shell around it.
 vi.mock(import("./Sidebar"), () => ({ default: (() => null) as never }));
 
+import { dispatchMenuAction } from "../shortcuts/dispatcher";
 import { AppSidebarLayout } from "./AppSidebarLayout";
 
 describe("sidebar toggle shortcut", () => {
@@ -39,4 +40,12 @@ describe("sidebar toggle shortcut", () => {
     await userEvent.keyboard("{Control>}b{/Control}");
     await vi.waitFor(() => expect(wrapper.getAttribute("data-sidebar-state")).toBe("collapsed"));
   });
+});
+
+it.each(["/", "/usage"])("handles the Open Usage menu action from %s", async (path) => {
+  await using screen = await render(<AppSidebarLayout>{null}</AppSidebarLayout>, { router: path });
+  using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue(undefined);
+  dispatchMenuAction("open-usage");
+  if (path === "/usage") expect(navigate).not.toHaveBeenCalled();
+  else expect(navigate).toHaveBeenCalledWith({ to: "/usage" });
 });

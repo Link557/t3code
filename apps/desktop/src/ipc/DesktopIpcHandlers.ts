@@ -8,6 +8,7 @@ import {
   appleSpeechTranscribe,
 } from "./methods/appleSpeech.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
+import { installUsageTray } from "./methods/usageTray.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
@@ -95,6 +96,7 @@ import {
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
+  yield* installUsageTray();
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
 
