@@ -13,8 +13,8 @@ import { DesktopWindow } from "../../window/DesktopWindow.ts";
 import { GET_USAGE_TRAY_ENABLED_CHANNEL, SET_USAGE_TRAY_ENABLED_CHANNEL } from "../channels.ts";
 import { DesktopIpc, makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
 
-class DesktopUsageTrayCreateError extends Schema.TaggedError<DesktopUsageTrayCreateError>()(
-  "DesktopUsageTrayCreateError",
+class DesktopUsageTrayError extends Schema.TaggedError<DesktopUsageTrayError>()(
+  "DesktopUsageTrayError",
   { cause: Schema.Defect() },
 ) {}
 
@@ -63,7 +63,7 @@ export const installUsageTray = Effect.fn("desktop.ipc.installUsageTray")(functi
           tray.on("click", openUsage);
           updateMenu();
         },
-        catch: (cause) => new DesktopUsageTrayCreateError({ cause }),
+        catch: (cause) => new DesktopUsageTrayError({ cause }),
       }).pipe(
         Effect.catch((error) => {
           destroy();
@@ -73,7 +73,14 @@ export const installUsageTray = Effect.fn("desktop.ipc.installUsageTray")(functi
     }
   });
   yield* app.on("before-quit", close);
-  const unsubscribe = onLocaleChange(updateMenu);
+  const unsubscribe = onLocaleChange(() =>
+    runFork(
+      Effect.try({
+        try: updateMenu,
+        catch: (cause) => new DesktopUsageTrayError({ cause }),
+      }).pipe(Effect.catch((error) => Effect.logWarning("Cannot update Usage tray menu", error))),
+    ),
+  );
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       unsubscribe();

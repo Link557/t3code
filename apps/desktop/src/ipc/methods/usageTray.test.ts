@@ -17,6 +17,7 @@ import { installUsageTray } from "./usageTray.ts";
 
 const native = vi.hoisted(() => ({
   listeners: new Map<string, () => void>(),
+  localeChange: undefined as (() => void) | undefined,
   create: vi.fn(),
   destroy: vi.fn(),
   setToolTip: vi.fn(),
@@ -38,6 +39,15 @@ vi.mock("electron", () => ({
     setContextMenu = vi.fn();
   },
   Menu: { buildFromTemplate: native.menu },
+}));
+vi.mock("../../i18n/messages.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../i18n/messages.ts")>()),
+  onLocaleChange: (listener: () => void) => {
+    native.localeChange = listener;
+    return () => {
+      native.localeChange = undefined;
+    };
+  },
 }));
 
 it.effect.each([
@@ -92,6 +102,11 @@ it.effect.each([
             ["open-usage", { reveal: true }],
             ["open-usage", { reveal: true }],
           ]);
+          native.menu.mockImplementationOnce(() => {
+            throw new Error("native menu failure");
+          });
+          expect(() => native.localeChange!()).not.toThrow();
+          expect(native.menu).toHaveBeenCalledTimes(2);
           yield* toggle(false);
           expect(native.destroy).toHaveBeenCalledTimes(1);
           yield* toggle(true);
